@@ -1,0 +1,31 @@
+import pandas as pd
+
+def get_data_from_row10():
+    try:
+        # CSVファイルを読み込む（9行目をスキップしてヘッダーを10行目に設定）
+        df = pd.read_csv('テスト.csv', 
+                        encoding='shift-jis',
+                        skiprows=9)
+        
+        # 欠損値をNaNとして扱う
+        df = df.replace('', pd.NA)
+        
+        # 1行目（インデックス0）でNaNの列を特定
+        nan_columns = df.iloc[0].isna()
+        
+        # NaNではない列のみを選択
+        df = df.loc[:, ~nan_columns]
+        
+        return df
+        
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+        return None
+
+# 実行例
+df = get_data_from_row10()
+if df is not None:
+    print("1行目がNaNの列を削除後のデータフレーム（先頭5行）:")
+    print(df.head())
+    print("\nデータフレームの形状:", df.shape)
+    print("\n残った列名:", list(df.columns))
