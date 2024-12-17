@@ -1,0 +1,65 @@
+def calculate_control_limits():
+    try:
+        # ユーザーから上限・下限を入力
+        UCL = float(input("UCL（規格上限）を入力してください: "))
+        LCL = float(input("LCL（規格下限）を入力してください: "))
+        
+        # 全区間の幅を計算
+        total_range = UCL - LCL
+        # 1区分の幅を計算（6等分）
+        division = total_range / 6
+        
+        # 各区分点を計算
+        fLt_UCL = UCL  # 最上限
+        fLt_UCLA_U = UCL
+        fLt_UCLA_L = UCL - division
+        fLt_UCLB_U = UCL - division
+        fLt_UCLB_L = UCL - (2 * division)
+        fLt_UCLC_U = UCL - (2 * division)
+        fLt_UCLC_L = UCL - (3 * division)
+        
+        fit_CL = (UCL + LCL) / 2  # 中心線
+        
+        fit_LCLC_U = LCL + (3 * division)
+        fit_LCLC_L = LCL + (2 * division)
+        fit_LCLB_U = LCL + (2 * division)
+        fit_LCLB_L = LCL + division
+        fit_LCLA_U = LCL + division
+        fit_LCLA_L = LCL
+        fit_LCL = LCL  # 最下限
+        
+        # 計算結果を辞書として返す
+        results = {
+            'fLt_UCL': fLt_UCL,
+            'fLt_UCLA_U': fLt_UCLA_U,
+            'fLt_UCLA_L': fLt_UCLA_L,
+            'fLt_UCLB_U': fLt_UCLB_U,
+            'fLt_UCLB_L': fLt_UCLB_L,
+            'fLt_UCLC_U': fLt_UCLC_U,
+            'fLt_UCLC_L': fLt_UCLC_L,
+            'fit_CL': fit_CL,
+            'fit_LCLC_U': fit_LCLC_U,
+            'fit_LCLC_L': fit_LCLC_L,
+            'fit_LCLB_U': fit_LCLB_U,
+            'fit_LCLB_L': fit_LCLB_L,
+            'fit_LCLA_U': fit_LCLA_U,
+            'fit_LCLA_L': fit_LCLA_L,
+            'fit_LCL': fit_LCL
+        }
+        
+
+        return results
+        
+    except ValueError as e:
+        print("エラー: 有効な数値を入力してください")
+        return None
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+        return None
+
+# 実行例
+results = calculate_control_limits()
+if results:
+    print("\n計算結果:")
+    for key, value in results.items():
+        print(f"{key}: {value:.3f}")
