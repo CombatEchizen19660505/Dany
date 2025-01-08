@@ -1,31 +1,52 @@
-import pandas as pd
+graph TB
+    subgraph Client["クライアント層"]
+        Web["Webブラウザ"]
+        Mobile["モバイルアプリ"]
+    end
 
-def get_data_from_row10():
-    try:
-        # CSVファイルを読み込む（9行目をスキップしてヘッダーを10行目に設定）
-        df = pd.read_csv('テスト.csv', 
-                        encoding='shift-jis',
-                        skiprows=9)
-        
-        # 欠損値をNaNとして扱う
-        df = df.replace('', pd.NA)
-        
-        # 1行目（インデックス0）でNaNの列を特定
-        nan_columns = df.iloc[0].isna()
-        
-        # NaNではない列のみを選択
-        df = df.loc[:, ~nan_columns]
-        
-        return df
-        
-    except Exception as e:
-        print(f"エラーが発生しました: {e}")
-        return None
+    subgraph Server["アプリケーション層"]
+        API["FastAPI サーバー"]
+        Auth["認証サービス"]
+        Chat["チャット管理"]
+        History["履歴管理"]
+    end
 
-# 実行例
-df = get_data_from_row10()
-if df is not None:
-    print("1行目がNaNの列を削除後のデータフレーム（先頭5行）:")
-    print(df.head())
-    print("\nデータフレームの形状:", df.shape)
-    print("\n残った列名:", list(df.columns))
+    subgraph AI["AI処理層"]
+        LLM["オープンソースLLM"]
+        PE["プロンプトエンジニアリング"]
+        VDB["ベクトルDB"]
+    end
+
+    subgraph Data["データ層"]
+        DB[(リレーショナルDB)]
+        Doc["社内文書ストレージ"]
+        Log["ログストレージ"]
+    end
+
+    Web --> API
+    Mobile --> API
+    
+    API --> Auth
+    API --> Chat
+    API --> History
+    
+    Chat --> LLM
+    Chat --> PE
+    Chat --> VDB
+    
+    VDB --> Doc
+    History --> DB
+    Auth --> DB
+    
+    LLM --> Log
+    Chat --> Log
+
+    classDef client fill:#e1f5fe,stroke:#01579b
+    classDef server fill:#e8f5e9,stroke:#1b5e20
+    classDef ai fill:#fce4ec,stroke:#880e4f
+    classDef data fill:#fff3e0,stroke:#e65100
+
+    class Web,Mobile client
+    class API,Auth,Chat,History server
+    class LLM,PE,VDB ai
+    class DB,Doc,Log data
