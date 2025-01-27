@@ -1,65 +1,319 @@
-def calculate_control_limits():
-    try:
-        # ユーザーから上限・下限を入力
-        UCL = float(input("UCL（規格上限）を入力してください: "))
-        LCL = float(input("LCL（規格下限）を入力してください: "))
+import requests
+import pandas as pd
+from datetime import datetime, timedelta
+from dateutil import parser
+from IPython.display import display
+import math
+import json
+import numpy as np
+import time
+
+# Excelファイルからアーカイブシートとスパムシートを読み込む
+excel_archive_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出_本番環境.xlsx"
+df_Archive = pd.read_excel(excel_archive_path, sheet_name='アーカイブ')
+df_Spam = pd.read_excel(excel_archive_path, sheet_name='スパム')
+
+def get_new_pools(network="eth", start_page=2):
+    all_pool_data = []
+    page = start_page
+    max_age_found = 0
+    current_datetime = datetime.now().strftime('%Y/%m/%d %H:%M')
+    archive_addresses = set(df_Archive['プールアドレス'].dropna())  # アーカイブのプールアドレスをセットとして保持
+    
+    while max_age_found < 15:
+        url = f"https://api.geckoterminal.com/api/v2/networks/solana/new_pools"
         
-        # 全区間の幅を計算
-        total_range = UCL - LCL
-        # 1区分の幅を計算（6等分）
-        division = total_range / 6
-        
-        # 各区分点を計算
-        fLt_UCL = UCL  # 最上限
-        fLt_UCLA_U = UCL
-        fLt_UCLA_L = UCL - division
-        fLt_UCLB_U = UCL - division
-        fLt_UCLB_L = UCL - (2 * division)
-        fLt_UCLC_U = UCL - (2 * division)
-        fLt_UCLC_L = UCL - (3 * division)
-        
-        fit_CL = (UCL + LCL) / 2  # 中心線
-        
-        fit_LCLC_U = LCL + (3 * division)
-        fit_LCLC_L = LCL + (2 * division)
-        fit_LCLB_U = LCL + (2 * division)
-        fit_LCLB_L = LCL + division
-        fit_LCLA_U = LCL + division
-        fit_LCLA_L = LCL
-        fit_LCL = LCL  # 最下限
-        
-        # 計算結果を辞書として返す
-        results = {
-            'fLt_UCL': fLt_UCL,
-            'fLt_UCLA_U': fLt_UCLA_U,
-            'fLt_UCLA_L': fLt_UCLA_L,
-            'fLt_UCLB_U': fLt_UCLB_U,
-            'fLt_UCLB_L': fLt_UCLB_L,
-            'fLt_UCLC_U': fLt_UCLC_U,
-            'fLt_UCLC_L': fLt_UCLC_L,
-            'fit_CL': fit_CL,
-            'fit_LCLC_U': fit_LCLC_U,
-            'fit_LCLC_L': fit_LCLC_L,
-            'fit_LCLB_U': fit_LCLB_U,
-            'fit_LCLB_L': fit_LCLB_L,
-            'fit_LCLA_U': fit_LCLA_U,
-            'fit_LCLA_L': fit_LCLA_L,
-            'fit_LCL': fit_LCL
+        params = {
+            "include": "base_token,quote_token", 
+            "page": page
         }
         
+        try:
+            response = requests.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            if not data["data"]:
+                break
+                
+            for pool in data["data"]:
+                pool_info = pool["attributes"]
+                pool_address = pool_info['address']
+                
+                # プールアドレスがアーカイブに存在する場合、ループを抜ける
+                if pool_address in archive_addresses:
+                    print(f"既存のプールアドレスが見つかりました: {pool_address}")
+                    return pd.DataFrame(all_pool_data)
+                
+                created_at = parser.parse(pool_info['pool_created_at'])
+                current_time = datetime.now(created_at.tzinfo)
+                age = current_time - created_at
+                age_minutes = age.total_seconds() / 60
+                
+                max_age_found = max(max_age_found, age_minutes)
+                
+                price_changes = pool_info['price_change_percentage'] or {}
+                transactions = pool_info['transactions'] or {}
+                volume_data = pool_info['volume_usd'] if pool_info['volume_usd'] else {}
+                
+                pool_dict = {
+                    '日時': current_datetime,
+                    '名前': pool_info['name'],
+                    'Age[min]': f"{age_minutes:.1f}",
+                    '価格[$]': f"{float(pool_info['base_token_price_usd']):.6f}" if pool_info['base_token_price_usd'] else None,
+                    'LP[万$]': math.ceil(float(pool_info['reserve_in_usd'])/10000) if pool_info['reserve_in_usd'] else None,
+                    'FDV[万$]': math.ceil(float(pool_info['fdv_usd'])/10000) if pool_info['fdv_usd'] else None,
+                    'プールアドレス': pool_address,
+                    '5m取引量[$]': math.floor(float(volume_data.get('m5', 0))),
+                    '1H取引量[$]': math.floor(float(volume_data.get('h1', 0))),
+                    '6H取引量[$]': math.floor(float(volume_data.get('h6', 0))),
 
-        return results
+
+                    '5m[%]': price_changes.get('m5'),
+                    '1H[%]': price_changes.get('h1'),
+                    '6H[%]': price_changes.get('h6'),
+                    '24H[%]': price_changes.get('h24'),
+                    
+                    '5m buys': transactions.get('m5', {}).get('buys'),
+                    '15m buys': transactions.get('m15', {}).get('buys'),
+                    '30m buys': transactions.get('m30', {}).get('buys'),
+                    '1h buys': transactions.get('h1', {}).get('buys'),
+
+                    '5m sells': transactions.get('m5', {}).get('sells'),
+                    '15m sells': transactions.get('m15', {}).get('sells'),
+                    '30m sells': transactions.get('m30', {}).get('sells'),
+                    '1h sells': transactions.get('h1', {}).get('sells'),
+
+                    '5m buyers': transactions.get('m5', {}).get('buyers'),
+                    '15m buyers': transactions.get('m15', {}).get('buyers'),
+                    '30m buyers': transactions.get('m30', {}).get('buyers'),
+                    '1h buyers': transactions.get('h1', {}).get('buyers'),
+
+                    '5m sellers': transactions.get('m5', {}).get('sellers'),
+                    '15m sellers': transactions.get('m15', {}).get('sellers'),
+                    '30m sellers': transactions.get('m30', {}).get('sellers'),
+                    '1h sellers': transactions.get('h1', {}).get('sellers'),
+
+                    '24H取引量[$]': math.floor(float(volume_data.get('h24', 0)))
+                }
+                
+                all_pool_data.append(pool_dict)
+            
+            print(f"ページ {page} を処理中... 最大作成時間: {max_age_found:.1f}分")
+            page += 1
+            
+        except requests.exceptions.RequestException as e:
+            print(f"エラー: {e}")
+            break
+    
+    df_Buffer = pd.DataFrame(all_pool_data)
+    df_Buffer['名前'] = df_Buffer['名前'].str.replace(' / SOL', '')
+    
+    # スパムリストとの完全一致チェック
+    spam_exact_matches = df_Spam['完全一致'].dropna().str.lower()
+    df_Buffer = df_Buffer[~df_Buffer['名前'].str.lower().isin(spam_exact_matches)]
+    
+    # スパムリストとの部分一致チェック
+    spam_partial_matches = df_Spam['部分一致'].dropna().str.lower()
+    df_Buffer = df_Buffer[~df_Buffer['名前'].str.lower().apply(
+        lambda x: any(spam_str in x for spam_str in spam_partial_matches)
+    )]
+    
+    df_Buffer['Age[min]'] = df_Buffer['Age[min]'].astype(float)
+    
+    price_cols = ['5m[%]', '1H[%]', '6H[%]', '24H[%]']
+    for col in price_cols:
+        df_Buffer[col] = pd.to_numeric(df_Buffer[col], errors='coerce')
+    
+    df_Buffer = df_Buffer[df_Buffer['Age[min]'] > 5]
+    df_Buffer = df_Buffer[df_Buffer['LP[万$]'] > 1]
+    df_Buffer = df_Buffer[df_Buffer['FDV[万$]'] >= 1]
+    # df_Buffer = df_Buffer[~(df_Buffer[price_cols] < -50).any(axis=1)]
+    df_Buffer = df_Buffer[df_Buffer['5m[%]'] != 0]
+    
+    pd.set_option('display.max_columns', None)
+    pd.set_option('display.max_rows', None)
+    pd.set_option('display.width', None)
+    pd.set_option('display.max_colwidth', None)
+    
+    print("\n=== プール詳細情報 ===")
+    display(df_Buffer)
+    print("=" * 40)
+
+    df_Buffer = df_Buffer[df_Buffer['5m[%]'] != 0]
+    df_Buffer['Age[min]'] = pd.to_numeric(df_Buffer['Age[min]'])
+    df_Buffer = df_Buffer.sort_values('Age[min]', ascending=True)
+    df_Buffer = df_Buffer.drop_duplicates(subset=['プールアドレス'], keep='last')
+    
+    # 取引量が100以下の行を除外
+    volume_cols = ['5m取引量[$]', '1H取引量[$]', '6H取引量[$]', '24H取引量[$]']
+    df_Buffer = df_Buffer[df_Buffer[volume_cols].gt(100).any(axis=1)]
+    
+    # バイヤー数が10以下の行を除外
+    buyers_cols = ['5m buyers', '15m buyers', '30m buyers', '1h buyers']
+    df_Buffer = df_Buffer[df_Buffer[buyers_cols].gt(10).any(axis=1)]
+    
+    # セラー数が0の行を除外
+    sellers_cols = ['5m sellers', '15m sellers', '30m sellers', '1h sellers']
+    df_Buffer = df_Buffer[~df_Buffer[sellers_cols].eq(0).any(axis=1)]
+    
+    # 価格変化率が5000%以上の行を削除
+    df_Buffer = df_Buffer[~(df_Buffer[['5m[%]', '1H[%]'] ].ge(5000).any(axis=1))]
+    
+    # 価格変化率を小数点1桁に丸める
+    df_Buffer[['5m[%]', '1H[%]']] = df_Buffer[['5m[%]', '1H[%]']].round(1)
+    
+    # 特定の列を削除
+    columns_to_drop = ['6H[%]', '24H[%]', '5m buys', '15m buys', '30m buys', '1h buys', 
+                      '5m sells', '15m sells', '30m sells', '1h sells',
+                      '6H取引量[$]', '24H取引量[$]']
+    df_Buffer = df_Buffer.drop(columns=columns_to_drop)
+       
+    # 価格変化率を小数点1桁に丸める
+    df_Buffer[['5m[%]', '1H[%]']] = df_Buffer[['5m[%]', '1H[%]']].round(1)
+    
+    # 存在する列のみを削除
+    columns_to_drop = [col for col in ['6H[%]', '24H[%]', '5m buys', '15m buys', '30m buys', '1h buys', 
+                                     '5m sells', '15m sells', '30m sells', '1h sells',
+                                     '6H取引量[$]', '24H取引量[$]'] if col in df_Buffer.columns]
+    print("\n削除する列:", columns_to_drop)
+    if columns_to_drop:
+        df_Buffer = df_Buffer.drop(columns=columns_to_drop)
+    
+    print("\ndf_Buffer columns after drop:", df_Buffer.columns.tolist())
+    
+    print("\n=== 連結前のdf_Buffer shape ===")
+    print(df_Buffer.shape)
+
+    # OHLCVデータの取得と連結
+    base_url = "https://api.geckoterminal.com/api/v2"
+    timeframe = "minute"
+    aggregate = "5"
+
+    current_time = datetime.now()
+    success_count = 0
+    failure_count = 0
+    failure_reasons = []
+
+    # 各プールアドレスに対してOHLCVデータを取得
+    ohlcv_data_list = []
+
+    # プールアドレスを一行ずつ処理
+    for index, row in df_Buffer.iterrows():
+        pool_address = row['プールアドレス']
+        print(f"\n処理中のプールアドレス: {pool_address}")
         
-    except ValueError as e:
-        print("エラー: 有効な数値を入力してください")
-        return None
-    except Exception as e:
-        print(f"エラーが発生しました: {e}")
-        return None
+        # Age[min]の値を小数点以下切り捨てて取得
+        try:
+            age_minutes = math.floor(float(row['Age[min]']))
+            
+            # 年齢が一定値を超える場合はスキップ
+            if age_minutes > 1440:  # 24時間を超える場合
+                print(f"警告: プールの年齢が24時間を超えています: {age_minutes}分")
+                failure_reasons.append(f"Age too old: {age_minutes} minutes")
+                failure_count += 1
+                continue
+                
+            # 各プールの年齢に基づいてタイムスタンプを計算
+            twenty_mins_ago = current_time - timedelta(minutes=age_minutes)
+            # パターン1 Age[min]から逆算し時間を指定する。
+            # before_timestamp = int(twenty_mins_ago.timestamp())
+            
+            # パターン２ プールの年齢に関係なく、直近のデータを取得する場合⇒これが正解。
+            before_timestamp = int(current_time.timestamp())
 
-# 実行例
-results = calculate_control_limits()
-if results:
-    print("\n計算結果:")
-    for key, value in results.items():
-        print(f"{key}: {value:.3f}")
+            # パターン３ 一定期間（例：30分）前までのデータを取得する場合
+            # before_timestamp = int((current_time - timedelta(minutes=30)).timestamp())
+
+            current_timestamp = int(datetime.now().timestamp())
+            if before_timestamp > current_timestamp:
+                print(f"警告: 未来の時刻が指定されています: {datetime.fromtimestamp(before_timestamp).strftime('%Y/%m/%d %H:%M')}")
+                before_timestamp = current_timestamp
+            
+            endpoint = f"{base_url}/networks/solana/pools/{pool_address}/ohlcv/{timeframe}"
+            params = {
+                "aggregate": aggregate,
+                "before_timestamp": before_timestamp,
+                "limit": "100",
+                "currency": "usd",
+                "token": "base",
+                "include": "base_token,quote_token"  # このパラメータを追加
+            }
+            
+            response = requests.get(endpoint, params=params)
+            response.raise_for_status()
+            data = response.json()
+            print(f"API Response data: {json.dumps(data, indent=2)}")
+
+
+            if "data" in data and "attributes" in data["data"] and "ohlcv_list" in data["data"]["attributes"]:
+                ohlcv_list = data["data"]["attributes"]["ohlcv_list"]
+
+                # base_tokenのアドレスを取得
+                base_token_address = None
+                if "included" in data:
+                    for included_item in data["included"]:
+                        if included_item["type"] == "token" and included_item.get("attributes", {}).get("role") == "base":
+                            base_token_address = included_item["attributes"].get("address")
+                            break
+                
+                if len(ohlcv_list) >= 2:
+                    ohlcv_data = {
+                        'プールアドレス': pool_address,
+                        'コントラクトアドレス': base_token_address,  # base_tokenのアドレスを追加
+                        '1_Ti': datetime.fromtimestamp(ohlcv_list[1][0]).strftime('%Y/%m/%d %H:%M'),
+                        '1-Op': np.ceil(ohlcv_list[1][1] * 10000000) / 10000000,
+                        '1-Hi': np.ceil(ohlcv_list[1][2] * 10000000) / 10000000,
+                        '1-Lo': np.ceil(ohlcv_list[1][3] * 10000000) / 10000000,
+                        '1-Cl': np.ceil(ohlcv_list[1][4] * 10000000) / 10000000,
+                        '1-Vo': np.floor(ohlcv_list[1][5]),
+                        '2_Ti': datetime.fromtimestamp(ohlcv_list[0][0]).strftime('%Y/%m/%d %H:%M'),
+                        '2-Op': np.ceil(ohlcv_list[0][1] * 10000000) / 10000000,
+                        '2-Hi': np.ceil(ohlcv_list[0][2] * 10000000) / 10000000,
+                        '2-Lo': np.ceil(ohlcv_list[0][3] * 10000000) / 10000000,
+                        '2-Cl': np.ceil(ohlcv_list[0][4] * 10000000) / 10000000,
+                        '2-Vo': np.floor(ohlcv_list[0][5])
+                    }
+                    ohlcv_data_list.append(ohlcv_data)
+                    success_count += 1
+                else:
+                    print(f"警告: {pool_address} の OHLCV データが不足しています")
+                    failure_reasons.append(f"Insufficient data points: {len(ohlcv_list)}")
+                    failure_count += 1
+            else:
+                print(f"警告: {pool_address} の レスポンス構造が無効です")
+                failure_reasons.append("Invalid response structure")
+                failure_count += 1
+                
+        except requests.exceptions.RequestException as e:
+            print(f"エラー: {pool_address} の OHLCV データ取得に失敗しました - {str(e)}")
+            failure_reasons.append(f"Request error: {str(e)}")
+            failure_count += 1
+            continue
+        except Exception as e:
+            print(f"予期せぬエラー: {str(e)}")
+            failure_reasons.append(f"Unexpected error: {str(e)}")
+            failure_count += 1
+            continue
+        
+        # APIレート制限を考慮して待機時間を増やす
+        time.sleep(0.1)  # 0.5秒に増やす
+
+    # OHLCVデータをDataFrameに変換
+    if ohlcv_data_list:
+        df_ohlcv = pd.DataFrame(ohlcv_data_list)
+        # プールアドレスでdf_BufferとOHLCVデータを結合
+        df_Buffer = pd.merge(df_Buffer, df_ohlcv, on='プールアドレス', how='left')
+        
+    else:
+        print("\n=== WARNING: No OHLCV data was collected ===")
+    
+    excel_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出-デバッグ.xlsx"
+
+    df_Buffer.to_excel(excel_path, index=False)
+    print(f"\nデータを {excel_path} に出力しました。")
+    
+    return df_Buffer
+
+if __name__ == "__main__":
+    df_Buffer = get_new_pools()
