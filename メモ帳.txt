@@ -6,14 +6,19 @@ from IPython.display import display
 import math
 import json
 import numpy as np
-import time
+import time  # time モジュールをインポート（sleep用）
+from datetime import datetime, timedelta
+from dateutil import parser
+
+from datetime import time as datetime_time
 
 # Excelファイルからアーカイブシートとスパムシートを読み込む
 excel_archive_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出_本番環境.xlsx"
+excel_archive_path_spam = r"C:\Users\valen\OneDrive\デスクトップ\df_spam.xlsx"
 df_Archive = pd.read_excel(excel_archive_path, sheet_name='アーカイブ')
-df_Spam = pd.read_excel(excel_archive_path, sheet_name='スパム')
+df_Spam = pd.read_excel(excel_archive_path_spam, sheet_name='スパム')
 
-def get_new_pools(network="eth", start_page=2):
+def get_new_pools(network="solana", start_page=2):
     all_pool_data = []
     page = start_page
     max_age_found = 0
@@ -126,8 +131,8 @@ def get_new_pools(network="eth", start_page=2):
         df_Buffer[col] = pd.to_numeric(df_Buffer[col], errors='coerce')
     
     df_Buffer = df_Buffer[df_Buffer['Age[min]'] > 5]
-    df_Buffer = df_Buffer[df_Buffer['LP[万$]'] > 1]
-    df_Buffer = df_Buffer[df_Buffer['FDV[万$]'] >= 1]
+    df_Buffer = df_Buffer[df_Buffer['LP[万$]'] > 3]
+    df_Buffer = df_Buffer[df_Buffer['FDV[万$]'] >= 3]
     # df_Buffer = df_Buffer[~(df_Buffer[price_cols] < -50).any(axis=1)]
     df_Buffer = df_Buffer[df_Buffer['5m[%]'] != 0]
     
@@ -136,10 +141,6 @@ def get_new_pools(network="eth", start_page=2):
     pd.set_option('display.width', None)
     pd.set_option('display.max_colwidth', None)
     
-    print("\n=== プール詳細情報 ===")
-    display(df_Buffer)
-    print("=" * 40)
-
     df_Buffer = df_Buffer[df_Buffer['5m[%]'] != 0]
     df_Buffer['Age[min]'] = pd.to_numeric(df_Buffer['Age[min]'])
     df_Buffer = df_Buffer.sort_values('Age[min]', ascending=True)
@@ -149,10 +150,12 @@ def get_new_pools(network="eth", start_page=2):
     volume_cols = ['5m取引量[$]', '1H取引量[$]', '6H取引量[$]', '24H取引量[$]']
     df_Buffer = df_Buffer[df_Buffer[volume_cols].gt(100).any(axis=1)]
     
-    # バイヤー数が10以下の行を除外
+    # # バイヤー数が10以下の行を除外
     buyers_cols = ['5m buyers', '15m buyers', '30m buyers', '1h buyers']
     df_Buffer = df_Buffer[df_Buffer[buyers_cols].gt(10).any(axis=1)]
     
+
+
     # セラー数が0の行を除外
     sellers_cols = ['5m sellers', '15m sellers', '30m sellers', '1h sellers']
     df_Buffer = df_Buffer[~df_Buffer[sellers_cols].eq(0).any(axis=1)]
@@ -168,22 +171,22 @@ def get_new_pools(network="eth", start_page=2):
                       '5m sells', '15m sells', '30m sells', '1h sells',
                       '6H取引量[$]', '24H取引量[$]']
     df_Buffer = df_Buffer.drop(columns=columns_to_drop)
+   
        
     # 価格変化率を小数点1桁に丸める
     df_Buffer[['5m[%]', '1H[%]']] = df_Buffer[['5m[%]', '1H[%]']].round(1)
     
+    # 5m buyers が 5m sellers より小さい行を削除
+    df_Buffer = df_Buffer[df_Buffer['5m buyers'] >= df_Buffer['5m sellers']]
+
     # 存在する列のみを削除
     columns_to_drop = [col for col in ['6H[%]', '24H[%]', '5m buys', '15m buys', '30m buys', '1h buys', 
                                      '5m sells', '15m sells', '30m sells', '1h sells',
                                      '6H取引量[$]', '24H取引量[$]'] if col in df_Buffer.columns]
-    print("\n削除する列:", columns_to_drop)
+    
+    
     if columns_to_drop:
         df_Buffer = df_Buffer.drop(columns=columns_to_drop)
-    
-    print("\ndf_Buffer columns after drop:", df_Buffer.columns.tolist())
-    
-    print("\n=== 連結前のdf_Buffer shape ===")
-    print(df_Buffer.shape)
 
     # OHLCVデータの取得と連結
     base_url = "https://api.geckoterminal.com/api/v2"
@@ -201,7 +204,6 @@ def get_new_pools(network="eth", start_page=2):
     # プールアドレスを一行ずつ処理
     for index, row in df_Buffer.iterrows():
         pool_address = row['プールアドレス']
-        print(f"\n処理中のプールアドレス: {pool_address}")
         
         # Age[min]の値を小数点以下切り捨てて取得
         try:
@@ -227,7 +229,6 @@ def get_new_pools(network="eth", start_page=2):
 
             current_timestamp = int(datetime.now().timestamp())
             if before_timestamp > current_timestamp:
-                print(f"警告: 未来の時刻が指定されています: {datetime.fromtimestamp(before_timestamp).strftime('%Y/%m/%d %H:%M')}")
                 before_timestamp = current_timestamp
             
             endpoint = f"{base_url}/networks/solana/pools/{pool_address}/ohlcv/{timeframe}"
@@ -243,20 +244,20 @@ def get_new_pools(network="eth", start_page=2):
             response = requests.get(endpoint, params=params)
             response.raise_for_status()
             data = response.json()
-            print(f"API Response data: {json.dumps(data, indent=2)}")
-
 
             if "data" in data and "attributes" in data["data"] and "ohlcv_list" in data["data"]["attributes"]:
                 ohlcv_list = data["data"]["attributes"]["ohlcv_list"]
 
                 # base_tokenのアドレスを取得
-                base_token_address = None
-                if "included" in data:
-                    for included_item in data["included"]:
-                        if included_item["type"] == "token" and included_item.get("attributes", {}).get("role") == "base":
-                            base_token_address = included_item["attributes"].get("address")
-                            break
-                
+                # base_token_address = None
+                # if "included" in data:
+                #     for included_item in data["included"]:
+                #         if included_item["type"] == "token" and included_item.get("attributes", {}).get("role") == "base":
+                #             base_token_address = included_item["attributes"].get("address")
+                #             break
+                base_token_address= data['meta']['base']['address']
+
+
                 if len(ohlcv_list) >= 2:
                     ohlcv_data = {
                         'プールアドレス': pool_address,
@@ -277,11 +278,9 @@ def get_new_pools(network="eth", start_page=2):
                     ohlcv_data_list.append(ohlcv_data)
                     success_count += 1
                 else:
-                    print(f"警告: {pool_address} の OHLCV データが不足しています")
                     failure_reasons.append(f"Insufficient data points: {len(ohlcv_list)}")
                     failure_count += 1
             else:
-                print(f"警告: {pool_address} の レスポンス構造が無効です")
                 failure_reasons.append("Invalid response structure")
                 failure_count += 1
                 
@@ -304,16 +303,96 @@ def get_new_pools(network="eth", start_page=2):
         df_ohlcv = pd.DataFrame(ohlcv_data_list)
         # プールアドレスでdf_BufferとOHLCVデータを結合
         df_Buffer = pd.merge(df_Buffer, df_ohlcv, on='プールアドレス', how='left')
-        
+
     else:
         print("\n=== WARNING: No OHLCV data was collected ===")
-    
-    excel_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出-デバッグ.xlsx"
 
-    df_Buffer.to_excel(excel_path, index=False)
-    print(f"\nデータを {excel_path} に出力しました。")
-    
+    # 取引量が100000未満の行を削除（OHLCVデータ結合後に実行）
+    df_Buffer = df_Buffer[
+        (df_Buffer['1-Vo'] >= 100000) | 
+        (df_Buffer['2-Vo'] >= 100000)
+    ]
+
+    # 1-Op < 1-Cl かつ 2-Op > 2-Cl の条件でフィルタリング
+    df_Buffer = df_Buffer[
+        (df_Buffer['1-Op'] > df_Buffer['1-Cl']) & 
+        (df_Buffer['2-Op'] < df_Buffer['2-Cl'])
+    ]
+
+    # URL列を追加
+    df_Buffer['URL'] = 'https://www.geckoterminal.com/ja/solana/pools/' + df_Buffer['プールアドレス']
+
+    # 指定された列を削除
+    columns_to_remove = ['30m buyers', '1h buyers', '30m sellers', '1h sellers']
+    df_Buffer = df_Buffer.drop(columns=columns_to_remove, errors='ignore')
+
+    # excel_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出-デバッグ.xlsx"
+    excel_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出_本番環境.xlsx"
+
+    # LINE通知用の設定
+    TOKEN = "U5wJYEhcZvdLMuWYNYW7hluUCuOJY74p5LqRhFbuuLi"
+    api_url = "https://notify-api.line.me/api/notify"
+    headers = {'Authorization': f'Bearer {TOKEN}'}
+
+    try:
+        # 既存のExcelファイルを読み込む
+        existing_df = pd.read_excel(excel_path, sheet_name='アーカイブ')
+
+        # 現在の日本時間を取得
+        current_time = datetime.now().time()
+        notification_start = datetime_time(5, 30)  # 5:30
+        notification_end = datetime_time(22, 0)    # 22:00
+
+        # 新しいデータがあり、かつ通知時間内の場合にLINE通知を送信
+        if not df_Buffer.empty and notification_start <= current_time <= notification_end:
+            for _, row in df_Buffer.iterrows():
+                message = (
+                    f"\n名前: {row['名前']}"
+                    f"\nコントラクトアドレス: {row['コントラクトアドレス']}"
+                    f"\nURL: {row['URL']}"
+                )
+                payload = {'message': message}
+                requests.post(api_url, headers=headers, data=payload)
+                time.sleep(0.1)  # LINE APIの制限を考慮して1秒待機
+        
+        # 新しいデータを既存のデータに追加
+        combined_df = pd.concat([existing_df, df_Buffer], ignore_index=True)
+
+
+    except FileNotFoundError:
+        # ファイルが存在しない場合は新規作成
+        combined_df = df_Buffer
+
+    # Excelライターを作成（既存ファイルを上書きモード）
+    with pd.ExcelWriter(excel_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+        # 結合したDataFrameをアーカイブシートに出力
+        combined_df.to_excel(writer, sheet_name='アーカイブ', index=False)
+        
+        # ワークシートを取得
+        worksheet = writer.sheets['アーカイブ']
+        
+        # 列幅の自動調整
+        for column in worksheet.columns:
+            max_length = 0
+            column = [cell for cell in column]
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
+        
+        # URL列にハイパーリンクを設定
+        url_col_index = combined_df.columns.get_loc('URL') + 1  # Excelは1から始まるため+1
+        for row in range(2, len(combined_df) + 2):  # ヘッダー行を除くため2から開始
+            cell = worksheet.cell(row=row, column=url_col_index)
+            cell.hyperlink = cell.value
+            cell.style = 'Hyperlink'
+
     return df_Buffer
 
 if __name__ == "__main__":
     df_Buffer = get_new_pools()
+    print("動作完了")
