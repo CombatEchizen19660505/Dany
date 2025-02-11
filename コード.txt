@@ -546,12 +546,18 @@ if __name__ == "__main__":
 
     # 1時間後のExcelファイルへの書き出し処理
     if not df_Buffer.empty:  # データフレームが空でない場合のみ書き出す
+        df_Buffer = df_Buffer[
+            (df_Buffer['FDV/Holder'] >= 120) & 
+            (df_Buffer['FDV/Holder'] < 500)&
+            (df_Buffer['Holder'] >= 1200)
+        ]
+
         df_Buffer['日時'] = pd.to_datetime(df_Buffer['日時'])  # '日時'列をdatetime型に変換
         df_Buffer['Age[min]'] = pd.to_numeric(df_Buffer['Age[min]'])  # 'Age[min]'列を数値型に変換
-        df_Buffer['上場時間'] = df_Buffer.apply(lambda row: (row['日時'] - timedelta(minutes=row['Age[min]'])).strftime('%Y/%m/%d %H:%M'), axis=1)
+        df_Buffer['上場時間'] = df_Buffer.apply(lambda row: (row['日時'] - timedelta(minutes=row['Age[min]'])).strftime('%Y/%m/%d %H:%M') if pd.notna(row['日時']) and pd.notna(row['Age[min]']) else None, axis=1)
 
         # 抽出したい列名のリスト
-        columns_to_keep = ['上場時間','名前', '価格[$]', 'LP[万$]', 'FDV[万$]','Holder','FDV/Holder','判定','URL','プールアドレス']  
+        columns_to_keep = ['上場時間','名前', '価格[$]', 'LP[万$]', 'FDV[万$]','Holder','FDV/Holder','URL','プールアドレス']  
 
         # 指定した列のみを抽出
         df_Buffer = df_Buffer[columns_to_keep]
