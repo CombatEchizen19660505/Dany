@@ -1,3 +1,4 @@
+# 検知システムver1 検出精度と低い。
 import requests
 import pandas as pd
 from datetime import datetime, timedelta
@@ -9,23 +10,32 @@ import numpy as np
 import time  # time モジュールをインポート（sleep用）
 from datetime import datetime, timedelta
 from dateutil import parser
-
 from datetime import time as datetime_time
+
+from selenium import webdriver
+from selenium.webdriver.edge.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
 
 # Excelファイルからアーカイブシートとスパムシートを読み込む
 excel_archive_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出_本番環境.xlsx"
 excel_archive_path_spam = r"C:\Users\valen\OneDrive\デスクトップ\df_spam.xlsx"
+excel_1h_path = r"C:\Users\valen\OneDrive\デスクトップ\SolanaトークンAPI_1時間経過後.xlsx"  # 1時間後のExcelファイルパス
 df_Archive = pd.read_excel(excel_archive_path, sheet_name='アーカイブ')
 df_Spam = pd.read_excel(excel_archive_path_spam, sheet_name='スパム')
 
-def get_new_pools(network="solana", start_page=2):
+def get_new_pools(network="solana", start_page=4):
     all_pool_data = []
     page = start_page
     max_age_found = 0
     current_datetime = datetime.now().strftime('%Y/%m/%d %H:%M')
     archive_addresses = set(df_Archive['プールアドレス'].dropna())  # アーカイブのプールアドレスをセットとして保持
-    
-    while max_age_found < 15:
+    found_existing_pool = False  # フラグを追加
+
+    while max_age_found < 30  and not found_existing_pool and page <= 10:
         url = f"https://api.geckoterminal.com/api/v2/networks/solana/new_pools"
         
         params = {
@@ -45,10 +55,11 @@ def get_new_pools(network="solana", start_page=2):
                 pool_info = pool["attributes"]
                 pool_address = pool_info['address']
                 
-                # プールアドレスがアーカイブに存在する場合、ループを抜ける
+                # プールアドレスがアーカイブに存在する場合、フラグを立ててループを抜ける
                 if pool_address in archive_addresses:
                     print(f"既存のプールアドレスが見つかりました: {pool_address}")
-                    return pd.DataFrame(all_pool_data)
+                    found_existing_pool = True  # フラグを設定
+                    break       # forループを抜ける
                 
                 created_at = parser.parse(pool_info['pool_created_at'])
                 current_time = datetime.now(created_at.tzinfo)
@@ -60,17 +71,20 @@ def get_new_pools(network="solana", start_page=2):
                 price_changes = pool_info['price_change_percentage'] or {}
                 transactions = pool_info['transactions'] or {}
                 volume_data = pool_info['volume_usd'] if pool_info['volume_usd'] else {}
-                
+               
+                dex_id = pool['relationships']['dex']['data']['id']# DEXのIDを取得
+
                 pool_dict = {
                     '日時': current_datetime,
                     '名前': pool_info['name'],
+                    'DEX': dex_id,
                     'Age[min]': f"{age_minutes:.1f}",
                     '価格[$]': f"{float(pool_info['base_token_price_usd']):.6f}" if pool_info['base_token_price_usd'] else None,
                     'LP[万$]': math.ceil(float(pool_info['reserve_in_usd'])/10000) if pool_info['reserve_in_usd'] else None,
                     'FDV[万$]': math.ceil(float(pool_info['fdv_usd'])/10000) if pool_info['fdv_usd'] else None,
                     'プールアドレス': pool_address,
-                    '5m取引量[$]': math.floor(float(volume_data.get('m5', 0))),
-                    '1H取引量[$]': math.floor(float(volume_data.get('h1', 0))),
+                    '5m取引量[万$]': math.floor(float(volume_data.get('m5', 0)) / 10000),  # Changed to 万$
+                    '1H取引量[万$]': math.floor(float(volume_data.get('h1', 0)) / 10000),  # Changed to 万$
                     '6H取引量[$]': math.floor(float(volume_data.get('h6', 0))),
 
 
@@ -101,7 +115,6 @@ def get_new_pools(network="solana", start_page=2):
 
                     '24H取引量[$]': math.floor(float(volume_data.get('h24', 0)))
                 }
-                
                 all_pool_data.append(pool_dict)
             
             print(f"ページ {page} を処理中... 最大作成時間: {max_age_found:.1f}分")
@@ -111,14 +124,18 @@ def get_new_pools(network="solana", start_page=2):
             print(f"エラー: {e}")
             break
     
+
     df_Buffer = pd.DataFrame(all_pool_data)
     df_Buffer['名前'] = df_Buffer['名前'].str.replace(' / SOL', '')
-    
-    # スパムリストとの完全一致チェック
+
+    # 固定 - Raydium以外のDexのデータを除去
+    df_Buffer = df_Buffer[df_Buffer['DEX'].str.lower() == 'raydium']
+
+    # 固定 - スパムリストとの完全一致チェック
     spam_exact_matches = df_Spam['完全一致'].dropna().str.lower()
     df_Buffer = df_Buffer[~df_Buffer['名前'].str.lower().isin(spam_exact_matches)]
     
-    # スパムリストとの部分一致チェック
+    # 固定 - スパムリストとの部分一致チェック
     spam_partial_matches = df_Spam['部分一致'].dropna().str.lower()
     df_Buffer = df_Buffer[~df_Buffer['名前'].str.lower().apply(
         lambda x: any(spam_str in x for spam_str in spam_partial_matches)
@@ -130,9 +147,10 @@ def get_new_pools(network="solana", start_page=2):
     for col in price_cols:
         df_Buffer[col] = pd.to_numeric(df_Buffer[col], errors='coerce')
     
-    df_Buffer = df_Buffer[df_Buffer['Age[min]'] > 5]
-    df_Buffer = df_Buffer[df_Buffer['LP[万$]'] > 3]
-    df_Buffer = df_Buffer[df_Buffer['FDV[万$]'] >= 3]
+    # 流動性、FDVは1万＄以上
+    df_Buffer = df_Buffer[df_Buffer['Age[min]'] > 12]
+    df_Buffer = df_Buffer[df_Buffer['LP[万$]'] > 1]
+    df_Buffer = df_Buffer[df_Buffer['FDV[万$]'] > 1]
     # df_Buffer = df_Buffer[~(df_Buffer[price_cols] < -50).any(axis=1)]
     df_Buffer = df_Buffer[df_Buffer['5m[%]'] != 0]
     
@@ -140,51 +158,54 @@ def get_new_pools(network="solana", start_page=2):
     pd.set_option('display.max_rows', None)
     pd.set_option('display.width', None)
     pd.set_option('display.max_colwidth', None)
-    
-    df_Buffer = df_Buffer[df_Buffer['5m[%]'] != 0]
+
     df_Buffer['Age[min]'] = pd.to_numeric(df_Buffer['Age[min]'])
     df_Buffer = df_Buffer.sort_values('Age[min]', ascending=True)
     df_Buffer = df_Buffer.drop_duplicates(subset=['プールアドレス'], keep='last')
     
-    # 取引量が100以下の行を除外
-    volume_cols = ['5m取引量[$]', '1H取引量[$]', '6H取引量[$]', '24H取引量[$]']
-    df_Buffer = df_Buffer[df_Buffer[volume_cols].gt(100).any(axis=1)]
-    
-    # # バイヤー数が10以下の行を除外
+    # 取引量が1万以上の行を抽出
+    volume_cols = ['5m取引量[万$]', '1H取引量[万$]', '6H取引量[$]', '24H取引量[$]']
+    df_Buffer = df_Buffer[df_Buffer[['5m取引量[万$]', '1H取引量[万$]']].gt(1).any(axis=1)]
+
+    # # バイヤー数が7以下の行を除外
     buyers_cols = ['5m buyers', '15m buyers', '30m buyers', '1h buyers']
-    df_Buffer = df_Buffer[df_Buffer[buyers_cols].gt(10).any(axis=1)]
+    df_Buffer = df_Buffer[df_Buffer[buyers_cols].gt(7).any(axis=1)]
     
-
-
-    # セラー数が0の行を除外
+    # # セラー数が0の行を除外 
     sellers_cols = ['5m sellers', '15m sellers', '30m sellers', '1h sellers']
     df_Buffer = df_Buffer[~df_Buffer[sellers_cols].eq(0).any(axis=1)]
     
-    # 価格変化率が5000%以上の行を削除
-    df_Buffer = df_Buffer[~(df_Buffer[['5m[%]', '1H[%]'] ].ge(5000).any(axis=1))]
-    
+    # 価格変化率のいずれかが3000%以上の場合、データを除外 
+    df_Buffer = df_Buffer[~(df_Buffer[['5m[%]', '1H[%]'] ].ge(3000).any(axis=1))]
+    df_Buffer = df_Buffer[df_Buffer['1H[%]'] >-79]
+
     # 価格変化率を小数点1桁に丸める
     df_Buffer[['5m[%]', '1H[%]']] = df_Buffer[['5m[%]', '1H[%]']].round(1)
     
-    # 特定の列を削除
-    columns_to_drop = ['6H[%]', '24H[%]', '5m buys', '15m buys', '30m buys', '1h buys', 
-                      '5m sells', '15m sells', '30m sells', '1h sells',
-                      '6H取引量[$]', '24H取引量[$]']
-    df_Buffer = df_Buffer.drop(columns=columns_to_drop)
-   
-       
-    # 価格変化率を小数点1桁に丸める
-    df_Buffer[['5m[%]', '1H[%]']] = df_Buffer[['5m[%]', '1H[%]']].round(1)
+    # 5M_TXN列を追加
+    df_Buffer['5M_TXN'] = df_Buffer['5m buys'] + df_Buffer['5m sells']
+    df_Buffer['15M_TXN'] = df_Buffer['15m buys'] + df_Buffer['15m sells']
+    df_Buffer['30M_TXN'] = df_Buffer['30m buys'] + df_Buffer['30m sells']
+    df_Buffer['1H_TXN'] = df_Buffer['1h buys'] + df_Buffer['1h sells']
+
+    df_Buffer = df_Buffer[
+        (df_Buffer['1H_TXN'] >= 1000) &
+        (df_Buffer['5M_TXN']>= 100) 
+    ]
+
+    # 5m buyers が 5m sellers より小さい行を削除    ⇒いったんコメントアウト
+    # df_Buffer = df_Buffer[df_Buffer['5m buyers'] >= df_Buffer['5m sellers']]
+
+    # # 存在する列のみを削除 ⇒下記のコードに変更buysとsellsの値も取得しておく
+    # columns_to_drop = [col for col in ['6H[%]', '24H[%]', '5m buys', '15m buys', '30m buys', '1h buys', 
+    #                                  '5m sells', '15m sells', '30m sells', '1h sells',
+    #                                  '6H取引量[$]', '24H取引量[$]'] if col in df_Buffer.columns]
     
-    # 5m buyers が 5m sellers より小さい行を削除
-    df_Buffer = df_Buffer[df_Buffer['5m buyers'] >= df_Buffer['5m sellers']]
+
 
     # 存在する列のみを削除
-    columns_to_drop = [col for col in ['6H[%]', '24H[%]', '5m buys', '15m buys', '30m buys', '1h buys', 
-                                     '5m sells', '15m sells', '30m sells', '1h sells',
-                                     '6H取引量[$]', '24H取引量[$]'] if col in df_Buffer.columns]
-    
-    
+    columns_to_drop = [col for col in ['6H[%]','6H取引量[$]'] if col in df_Buffer.columns]
+    # print(df_Buffer)
     if columns_to_drop:
         df_Buffer = df_Buffer.drop(columns=columns_to_drop)
 
@@ -221,7 +242,7 @@ def get_new_pools(network="solana", start_page=2):
             # パターン1 Age[min]から逆算し時間を指定する。
             # before_timestamp = int(twenty_mins_ago.timestamp())
             
-            # パターン２ プールの年齢に関係なく、直近のデータを取得する場合⇒これが正解。
+            # パターン２ プールの年齢に関係なく、直近のデータを取得する場合⇒とりあえずこれで思った通りの動作しているのでOK。
             before_timestamp = int(current_time.timestamp())
 
             # パターン３ 一定期間（例：30分）前までのデータを取得する場合
@@ -248,36 +269,10 @@ def get_new_pools(network="solana", start_page=2):
             if "data" in data and "attributes" in data["data"] and "ohlcv_list" in data["data"]["attributes"]:
                 ohlcv_list = data["data"]["attributes"]["ohlcv_list"]
 
-                # base_tokenのアドレスを取得
-                # base_token_address = None
-                # if "included" in data:
-                #     for included_item in data["included"]:
-                #         if included_item["type"] == "token" and included_item.get("attributes", {}).get("role") == "base":
-                #             base_token_address = included_item["attributes"].get("address")
-                #             break
-
                 # タイムスタンプ（最初の要素）でソート
                 sorted_ohlcv = sorted(ohlcv_list, key=lambda x: x[0])
                 base_token_address= data['meta']['base']['address']
 
-
-                # if len(ohlcv_list) >= 2:
-                #     ohlcv_data = {
-                #         'プールアドレス': pool_address,
-                #         'コントラクトアドレス': base_token_address,  # base_tokenのアドレスを追加
-                #         '1_Ti': datetime.fromtimestamp(ohlcv_list[1][0]).strftime('%Y/%m/%d %H:%M'),
-                #         '1-Op': np.ceil(ohlcv_list[1][1] * 10000000) / 10000000,
-                #         '1-Hi': np.ceil(ohlcv_list[1][2] * 10000000) / 10000000,
-                #         '1-Lo': np.ceil(ohlcv_list[1][3] * 10000000) / 10000000,
-                #         '1-Cl': np.ceil(ohlcv_list[1][4] * 10000000) / 10000000,
-                #         '1-Vo': np.floor(ohlcv_list[1][5]),
-                #         '2_Ti': datetime.fromtimestamp(ohlcv_list[0][0]).strftime('%Y/%m/%d %H:%M'),
-                #         '2-Op': np.ceil(ohlcv_list[0][1] * 10000000) / 10000000,
-                #         '2-Hi': np.ceil(ohlcv_list[0][2] * 10000000) / 10000000,
-                #         '2-Lo': np.ceil(ohlcv_list[0][3] * 10000000) / 10000000,
-                #         '2-Cl': np.ceil(ohlcv_list[0][4] * 10000000) / 10000000,
-                #         '2-Vo': np.floor(ohlcv_list[0][5])
-                #     }
 
                 if len(sorted_ohlcv) >= 2:
                     # print(sorted_ohlcv)
@@ -297,7 +292,28 @@ def get_new_pools(network="solana", start_page=2):
                         '2-Hi': np.ceil(sorted_ohlcv[1][2] * 10000000) / 10000000,
                         '2-Lo': np.ceil(sorted_ohlcv[1][3] * 10000000) / 10000000,
                         '2-Cl': np.ceil(sorted_ohlcv[1][4] * 10000000) / 10000000,
-                        '2-Vo': np.floor(sorted_ohlcv[1][5])
+                        '2-Vo': np.floor(sorted_ohlcv[1][5]),
+                        # 3番目に古いデータ（[2]）を3_Ti, 3-Op等に割り当て
+                        '3_Ti': datetime.fromtimestamp(sorted_ohlcv[2][0]).strftime('%Y/%m/%d %H:%M'),
+                        '3-Op': np.ceil(sorted_ohlcv[2][1] * 10000000) / 10000000,
+                        '3-Hi': np.ceil(sorted_ohlcv[2][2] * 10000000) / 10000000,
+                        '3-Lo': np.ceil(sorted_ohlcv[2][3] * 10000000) / 10000000,
+                        '3-Cl': np.ceil(sorted_ohlcv[2][4] * 10000000) / 10000000,
+                        '3-Vo': np.floor(sorted_ohlcv[2][5])
+                        # # 4番目に古いデータ（[3]）を3_Ti, 3-Op等に割り当て
+                        # '4_Ti': datetime.fromtimestamp(sorted_ohlcv[3][0]).strftime('%Y/%m/%d %H:%M'),
+                        # '4-Op': np.ceil(sorted_ohlcv[3][1] * 10000000) / 10000000,
+                        # '4-Hi': np.ceil(sorted_ohlcv[3][2] * 10000000) / 10000000,
+                        # '4-Lo': np.ceil(sorted_ohlcv[3][3] * 10000000) / 10000000,
+                        # '4-Cl': np.ceil(sorted_ohlcv[3][4] * 10000000) / 10000000,
+                        # '4-Vo': np.floor(sorted_ohlcv[3][5]),
+                        # # 5番目に古いデータ（[4]）を3_Ti, 3-Op等に割り当て
+                        # '5_Ti': datetime.fromtimestamp(sorted_ohlcv[4][0]).strftime('%Y/%m/%d %H:%M'),
+                        # '5-Op': np.ceil(sorted_ohlcv[4][1] * 10000000) / 10000000,
+                        # '5-Hi': np.ceil(sorted_ohlcv[4][2] * 10000000) / 10000000,
+                        # '5-Lo': np.ceil(sorted_ohlcv[4][3] * 10000000) / 10000000,
+                        # '5-Cl': np.ceil(sorted_ohlcv[4][4] * 10000000) / 10000000,
+                        # '5-Vo': np.floor(sorted_ohlcv[4][5])
                     }
 
                     ohlcv_data_list.append(ohlcv_data)
@@ -332,24 +348,74 @@ def get_new_pools(network="solana", start_page=2):
     else:
         print("\n=== WARNING: No OHLCV data was collected ===")
 
-    # 取引量が100000未満の行を削除（OHLCVデータ結合後に実行）
-    df_Buffer = df_Buffer[
-        (df_Buffer['1-Vo'] >= 100000) | 
-        (df_Buffer['2-Vo'] >= 100000)
-    ]
+    # 取引量が15000未満の行を削除（OHLCVデータ結合後に実行）
+
+    # '1-Vo', '2-Vo', '3-Vo' を10000で割り、小数点以下1桁で表示
+    volume_cols = ['1-Vo', '2-Vo', '3-Vo', '4-Vo', '5-Vo']  # 処理対象の列リスト
+    for col in volume_cols:
+        if col in df_Buffer.columns:  # 列が存在する場合のみ処理
+            df_Buffer[col] = (df_Buffer[col] / 10000).round(1)
+
+    # df_Buffer = df_Buffer[
+    #     (df_Buffer['1-Vo'] >= 1) &
+    #     (df_Buffer['2-Vo'] >= 1) &
+    #     (df_Buffer['3-Vo'] >= 1)
+    # ]
+
 
     # 1-Op < 1-Cl かつ 2-Op > 2-Cl の条件でフィルタリング
-    df_Buffer = df_Buffer[
-        (df_Buffer['1-Op'] > df_Buffer['1-Cl']) & 
-        (df_Buffer['2-Op'] < df_Buffer['2-Cl'])
-    ]
+    # df_Buffer = df_Buffer[
+    #     (df_Buffer['1-Op'] > df_Buffer['1-Cl']) & 
+    #     (df_Buffer['2-Op'] < df_Buffer['2-Cl'])
+    # ]
 
     # URL列を追加
     df_Buffer['URL'] = 'https://www.geckoterminal.com/ja/solana/pools/' + df_Buffer['プールアドレス']
 
     # 指定された列を削除
-    columns_to_remove = ['30m buyers', '1h buyers', '30m sellers', '1h sellers']
-    df_Buffer = df_Buffer.drop(columns=columns_to_remove, errors='ignore')
+    # columns_to_remove = ['30m buyers', '1h buyers', '30m sellers', '1h sellers']
+    # df_Buffer = df_Buffer.drop(columns=columns_to_remove, errors='ignore')
+
+    # ホルダー数の取得処理を追加
+    df_Buffer['Holder'] = None  # Holder列を初期化
+    df_Buffer['FDV/Holder'] = None  # FDV/Holder列を初期化
+
+    for index, row in df_Buffer.iterrows():
+        try:
+            token_address = row['コントラクトアドレス']
+            print(f"Processing token {index + 1}/{len(df_Buffer)}: {token_address}")
+            
+            # ホルダー数を取得
+            holder_count = get_token_holders(token_address)
+            
+            # 数値に変換可能な場合のみ処理を続行
+            if isinstance(holder_count, str) and any(char.isdigit() for char in holder_count):
+                # カンマを削除して整数に変換
+                clean_count = int(holder_count.replace(',', ''))
+                df_Buffer.at[index, 'Holder'] = clean_count
+                
+                # FDV/Holder の計算
+                if clean_count > 0:  # ゼロ除算を防ぐ
+                    fdv_usd = float(row['FDV[万$]']) * 10000  # 万$から$に変換
+                    fdv_per_holder = int(fdv_usd / clean_count)  # 小数点以下切り捨て
+                    df_Buffer.at[index, 'FDV/Holder'] = fdv_per_holder
+            else:
+                print(f"Warning: Invalid holder count for {token_address}: {holder_count}")
+                
+            # APIの負荷を考慮して待機
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"Error processing token {token_address}: {str(e)}")
+            continue
+
+    df_Buffer = df_Buffer[df_Buffer['Holder'] > 100]
+
+    # 'FDV/Holder'を100～1000に設定
+    df_Buffer = df_Buffer[
+        (df_Buffer['FDV/Holder'] >= 60) & 
+        (df_Buffer['FDV/Holder'] < 1000)
+    ]
 
     # excel_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出-デバッグ.xlsx"
     excel_path = r"C:\Users\valen\OneDrive\デスクトップ\Solanaトークン_API抽出_本番環境.xlsx"
@@ -366,14 +432,23 @@ def get_new_pools(network="solana", start_page=2):
         # 現在の日本時間を取得
         current_time = datetime.now().time()
         notification_start = datetime_time(5, 30)  # 5:30
-        notification_end = datetime_time(22, 0)    # 22:00
+        notification_end = datetime_time(22, 30)    # 22:00
+
+        # 通知条件に合致するデータをフィルタリング
+        notification_df = df_Buffer[
+            (df_Buffer['FDV/Holder'] >= 120) & 
+            (df_Buffer['FDV/Holder'] < 500)&
+            (df_Buffer['Holder'] >= 1200)
+        ]
 
         # 新しいデータがあり、かつ通知時間内の場合にLINE通知を送信
         if not df_Buffer.empty and notification_start <= current_time <= notification_end:
-            for _, row in df_Buffer.iterrows():
+            for _, row in notification_df.iterrows():
                 message = (
+                    f"\n1本目陰線"
                     f"\n名前: {row['名前']}"
-                    f"\nコントラクトアドレス: {row['コントラクトアドレス']}"
+                    f"\nホルダー: {row['Holder']}"
+                    f"\nFDV/Holder: {row['FDV/Holder']}"                
                     f"\nURL: {row['URL']}"
                 )
                 payload = {'message': message}
@@ -418,6 +493,105 @@ def get_new_pools(network="solana", start_page=2):
 
     return df_Buffer
 
+
+def get_token_holders(token_address):
+    edge_options = Options()
+    edge_options.add_argument("--window-size=80,60")
+
+    try:
+        driver = webdriver.Edge(options=edge_options)
+        driver.implicitly_wait(20)  # 暗黙的な待機時間を20秒に設定
+
+        url = f"https://solscan.io/token/{token_address}"
+        print(f"アクセスするURL: {url}")
+
+        driver.get(url)
+        time.sleep(5)  # ページの初期ロード待機
+
+        # まずページ全体の読み込みを待機
+        wait = WebDriverWait(driver, 30)  # タイムアウト時間を30秒に延長
+        wait.until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+
+        try:
+            # テーブル内の要素を探索
+            holder_element = driver.find_element(By.XPATH, "//div[text()='Holders']/following-sibling::div")
+            holder_count = holder_element.text.strip()
+            print("ホルダー数が見つかりました")
+            return holder_count
+        except:
+            try:
+                # 代替のXPathを試す
+                holder_element = driver.find_element(By.XPATH, "//div[contains(text(), 'Holders')]/parent::div/following-sibling::div")
+                holder_count = holder_element.text.strip()
+                print("ホルダー数が見つかりました（代替方法）")
+                return holder_count
+            except:
+                print("要素が見つかりません。ページのHTML構造を確認します...")
+                print(driver.page_source[:2000])  # ページソースの最初の2000文字を表示
+                return "要素が見つかりませんでした"
+
+    except TimeoutException:
+        return "ページの読み込みがタイムアウトしました"
+    except Exception as e:
+        return f"エラーが発生しました: {str(e)}"
+    finally:
+        try:
+            if 'driver' in locals():
+                driver.quit()
+        except:
+            pass
+
 if __name__ == "__main__":
     df_Buffer = get_new_pools()
+
+    # 1時間後のExcelファイルへの書き出し処理
+    if not df_Buffer.empty:  # データフレームが空でない場合のみ書き出す
+        df_Buffer['日時'] = pd.to_datetime(df_Buffer['日時'])  # '日時'列をdatetime型に変換
+        df_Buffer['Age[min]'] = pd.to_numeric(df_Buffer['Age[min]'])  # 'Age[min]'列を数値型に変換
+        df_Buffer['上場時間'] = df_Buffer.apply(lambda row: (row['日時'] - timedelta(minutes=row['Age[min]'])).strftime('%Y/%m/%d %H:%M'), axis=1)
+
+        # 抽出したい列名のリスト
+        columns_to_keep = ['上場時間','名前', '価格[$]', 'LP[万$]', 'FDV[万$]','Holder','FDV/Holder','判定','URL','プールアドレス']  
+
+        # 指定した列のみを抽出
+        df_Buffer = df_Buffer[columns_to_keep]
+        
+        try:
+            # 既存のExcelファイルを読み込む
+            existing_1h_df = pd.read_excel(excel_1h_path, sheet_name='1時間後')
+
+            # 新しいデータを既存のデータに追加
+            combined_1h_df = pd.concat([existing_1h_df, df_Buffer], ignore_index=True)
+
+        except FileNotFoundError:
+            # ファイルが存在しない場合は新規作成
+            combined_1h_df = df_Buffer
+
+        # Excelライターを作成（既存ファイルを上書きモード）
+        with pd.ExcelWriter(excel_1h_path, engine='openpyxl', mode='a', if_sheet_exists='replace') as writer:
+            # 結合したDataFrameを1時間後シートに出力
+            combined_1h_df.to_excel(writer, sheet_name='1時間後', index=False)
+
+            # ワークシートを取得
+            worksheet = writer.sheets['1時間後']
+
+            # 列幅の自動調整
+            for column in worksheet.columns:
+                max_length = 0
+                column = [cell for cell in column]
+                for cell in column:
+                    try:
+                        if len(str(cell.value)) > max_length:
+                            max_length = len(str(cell.value))
+                    except:
+                        pass
+                adjusted_width = (max_length + 2)
+                worksheet.column_dimensions[column[0].column_letter].width = adjusted_width
+
+            # URL列にハイパーリンクを設定
+            url_col_index = combined_1h_df.columns.get_loc('URL') + 1  # Excelは1から始まるため+1
+            for row in range(2, len(combined_1h_df) + 2):  # ヘッダー行を除くため2から開始
+                cell = worksheet.cell(row=row, column=url_col_index)
+                cell.hyperlink = cell.value
+                cell.style = 'Hyperlink'
     print("動作完了")
