@@ -1,0 +1,422 @@
+import flet as ft
+from flet import (
+    Page, 
+    Row, 
+    Column, 
+    Container, 
+    Text, 
+    ElevatedButton, 
+    MainAxisAlignment, 
+    CrossAxisAlignment,
+    BorderRadius,
+    Padding,
+    VerticalDivider,
+    Theme,
+    TextThemeStyle,
+    Colors,
+    Icons
+)
+from datetime import datetime, timedelta
+import calendar
+
+def main(page: Page):
+    # アプリの基本設定
+    page.title = "業務用デスクトップアプリ"
+    page.theme = Theme(font_family="Meiryo")
+    page.padding = 10
+    page.window_width = 1200
+    page.window_height = 800
+    page.window_min_width = 800
+    page.window_min_height = 600
+    page.auto_scroll = True
+    
+    # タイトル部分
+    title_container = Container(
+        content=Text("タイトル", size=30, weight="bold"),
+        bgcolor=Colors.BLUE_50,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        padding=15,
+        height=80,
+        width=page.window_width - 20,
+        alignment=ft.alignment.center,
+        border=ft.border.all(1, Colors.BLUE_200)
+    )
+    
+    # ボタン生成関数
+    def create_button(text):
+        return ElevatedButton(
+            text=text,
+            width=150,
+            height=50,
+            style=ft.ButtonStyle(
+                shape=ft.RoundedRectangleBorder(radius=5),
+            ),
+            bgcolor=Colors.WHITE,
+            color=Colors.BLACK,
+        )
+    
+    # ボタン領域
+    button_area = Container(
+        content=Column(
+            [
+                create_button("ボタン1"),
+                create_button("ボタン2"),
+                create_button("ボタン3"),
+                create_button("ボタン4"),
+                create_button("ボタン5"),
+                Container(height=20),  # スペーサー
+                Text("ボタン領域", size=16, color=Colors.GREY_700),
+            ],
+            spacing=10,
+            alignment=MainAxisAlignment.START,
+        ),
+        padding=10,
+        bgcolor=Colors.GREY_100,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        width=170,
+        height=page.window_height - 120,
+        border=ft.border.all(1, Colors.GREY_300)
+    )
+    
+    # メインコンテンツ1
+    main_content1 = Container(
+        content=Column(
+            [
+                Text("メインコンテンツ1", size=20, weight="bold"),
+                Container(
+                    content=Text("ここにメインコンテンツの詳細を表示します...", color=Colors.BLACK87),
+                    padding=15,
+                    bgcolor=Colors.WHITE,
+                    border_radius=BorderRadius(5, 5, 5, 5),
+                    border=ft.border.all(1, Colors.GREY_300),
+                    height=220,
+                    width=450
+                )
+            ],
+        ),
+        padding=15,
+        bgcolor=Colors.GREY_50,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        width=480,
+        height=300,
+        border=ft.border.all(1, Colors.GREY_300)
+    )
+    
+    # メインコンテンツ2
+    main_content2 = Container(
+        content=Column(
+            [
+                Text("メインコンテンツ2", size=20, weight="bold"),
+                Container(
+                    content=Text("ここに2つ目のコンテンツを表示します...", color=Colors.BLACK87),
+                    padding=15,
+                    bgcolor=Colors.WHITE,
+                    border_radius=BorderRadius(5, 5, 5, 5),
+                    border=ft.border.all(1, Colors.GREY_300),
+                    height=70,
+                    width=450
+                )
+            ],
+        ),
+        padding=15,
+        bgcolor=Colors.GREY_50,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        width=480,
+        height=150,
+        border=ft.border.all(1, Colors.GREY_300)
+    )
+    
+    # メインコンテンツ3
+    main_content3 = Container(
+        content=Column(
+            [
+                Text("メインコンテンツ3", size=20, weight="bold"),
+                Container(
+                    content=Text("ここに3つ目のコンテンツを表示します...", color=Colors.BLACK87),
+                    padding=15,
+                    bgcolor=Colors.WHITE,
+                    border_radius=BorderRadius(5, 5, 5, 5),
+                    border=ft.border.all(1, Colors.GREY_300),
+                    height=70,
+                    width=450
+                )
+            ],
+        ),
+        padding=15,
+        bgcolor=Colors.GREY_50,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        width=480,
+        height=150,
+        border=ft.border.all(1, Colors.GREY_300)
+    )
+    
+    # カレンダー部分
+    # 現在表示している年月を保持する状態変数
+    current_date = datetime.now()
+    
+    def update_calendar(delta_months=0):
+        nonlocal current_date
+        # 月を加算/減算して新しい日付を計算
+        year = current_date.year
+        month = current_date.month + delta_months
+        
+        # 月が範囲外の場合は年も調整
+        if month > 12:
+            year += month // 12
+            month = month % 12
+            if month == 0:
+                month = 12
+                year -= 1
+        elif month < 1:
+            year += (month - 1) // 12
+            month = month % 12
+            if month == 0:
+                month = 12
+        
+        current_date = datetime(year, month, 1)
+        # カレンダーを再生成して更新
+        calendar_container.content = create_calendar_content()
+        page.update()
+    
+    def create_calendar_content():
+        year = current_date.year
+        month = current_date.month
+        
+        # 月の最初の日と最後の日を取得
+        _, last_day = calendar.monthrange(year, month)
+        # 日曜始まりに調整（0=月曜→6=日曜、ここを1=日曜とする）
+        first_weekday = (calendar.weekday(year, month, 1) + 1) % 7
+        
+        # 左矢印ボタン（前月へ）
+        prev_month_btn = ft.IconButton(
+            icon=ft.Icons.ARROW_BACK,
+            icon_color=Colors.BLUE,
+            icon_size=20,
+            tooltip="前月",
+            on_click=lambda e: update_calendar(-1)
+        )
+        
+        # 右矢印ボタン（次月へ）
+        next_month_btn = ft.IconButton(
+            icon=ft.Icons.ARROW_FORWARD,
+            icon_color=Colors.BLUE,
+            icon_size=20,
+            tooltip="次月",
+            on_click=lambda e: update_calendar(1)
+        )
+        
+        # ヘッダー（月表示）- 矢印ボタン付き
+        calendar_header = Container(
+            content=Row(
+                [
+                    prev_month_btn,
+                    Text(f"{year}年 {month}月", size=20, weight="bold"),
+                    next_month_btn
+                ],
+                alignment=MainAxisAlignment.CENTER
+            ),
+            padding=5,
+            alignment=ft.alignment.center,
+            bgcolor=Colors.BLUE_100,
+            border_radius=BorderRadius(10, 10, 0, 0),
+        )
+        
+        # 曜日ヘッダー（日曜始まり）
+        weekdays = ["日", "月", "火", "水", "木", "金", "土"]
+        weekday_row = Row([
+            Container(
+                content=Text(day, size=14, color=Colors.RED if i == 0 else Colors.BLUE if i == 6 else Colors.BLACK87),
+                width=30,
+                height=30,
+                alignment=ft.alignment.center,
+            ) for i, day in enumerate(weekdays)
+        ], alignment=MainAxisAlignment.SPACE_AROUND)
+        
+        # カレンダー日付部分
+        days_grid = []
+        current_row = []
+        
+        # 前月の日を埋める
+        for i in range(first_weekday):
+            current_row.append(
+                Container(
+                    content=Text("", size=14),
+                    width=30,
+                    height=30,
+                    alignment=ft.alignment.center,
+                )
+            )
+        
+        # 今月の日付
+        for day in range(1, last_day + 1):
+            # 曜日計算（日曜始まり）
+            weekday = (first_weekday + day - 1) % 7
+            # 現在の日付と表示している月が同じ場合に今日をハイライト
+            now = datetime.now()
+            is_today = (day == now.day and month == now.month and year == now.year)
+            
+            # 日曜=0、土曜=6 に対応する色設定
+            day_color = Colors.RED if weekday == 0 else Colors.BLUE if weekday == 6 else Colors.BLACK87
+            
+            day_container = Container(
+                content=Text(str(day), size=14, color=day_color),
+                width=30,
+                height=30,
+                alignment=ft.alignment.center,
+                bgcolor=Colors.BLUE_50 if is_today else None,
+                border_radius=BorderRadius(15, 15, 15, 15) if is_today else None,
+            )
+            
+            current_row.append(day_container)
+            
+            # 7日ごとに新しい行に移動
+            if len(current_row) == 7:
+                days_grid.append(Row(current_row, alignment=MainAxisAlignment.SPACE_AROUND))
+                current_row = []
+        
+        # 残りのセルを埋める
+        if current_row:
+            while len(current_row) < 7:
+                current_row.append(
+                    Container(
+                        content=Text("", size=14),
+                        width=30,
+                        height=30,
+                        alignment=ft.alignment.center,
+                    )
+                )
+            days_grid.append(Row(current_row, alignment=MainAxisAlignment.SPACE_AROUND))
+        
+        # 6行になるまで空の行を追加
+        while len(days_grid) < 6:
+            empty_row = []
+            for _ in range(7):
+                empty_row.append(
+                    Container(
+                        content=Text("", size=14),
+                        width=30,
+                        height=30,
+                        alignment=ft.alignment.center,
+                    )
+                )
+            days_grid.append(Row(empty_row, alignment=MainAxisAlignment.SPACE_AROUND))
+        
+        # カレンダー全体を組み立て
+        calendar_content = Column(
+            [calendar_header, Container(height=10), weekday_row] + days_grid,
+            spacing=5,
+            alignment=MainAxisAlignment.START,
+        )
+        
+        return calendar_content
+    
+    # カレンダーコンテナを事前に作成（後で内容を更新するため）
+    calendar_container = Container(
+        content=None,  # 初期値はNone、後で更新
+        bgcolor=Colors.WHITE,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        width=270,
+        height=300,
+        border=ft.border.all(1, Colors.GREY_300)
+    )
+    
+    # カレンダーコンテンツを初期化して設定
+    def create_calendar():
+        calendar_container.content = create_calendar_content()
+        return calendar_container
+    
+    # カレンダーを生成
+    calendar_container = create_calendar()
+    
+    # トピック1
+    topic1 = Container(
+        content=Column(
+            [
+                Text("トピック1", size=18, weight="bold"),
+                Container(
+                    content=Text("トピック1の詳細情報をここに表示します。", size=14),
+                    padding=10,
+                    bgcolor=Colors.WHITE,
+                    width=220,
+                    height=70,
+                    border_radius=BorderRadius(5, 5, 5, 5),
+                    border=ft.border.all(1, Colors.GREY_300),
+                )
+            ],
+            spacing=10,
+        ),
+        padding=15,
+        bgcolor=Colors.GREY_50,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        width=270,
+        height=150,
+        border=ft.border.all(1, Colors.GREY_300)
+    )
+    
+    # トピック2
+    topic2 = Container(
+        content=Column(
+            [
+                Text("トピック2", size=18, weight="bold"),
+                Container(
+                    content=Text("トピック2の詳細情報をここに表示します。", size=14),
+                    padding=10,
+                    bgcolor=Colors.WHITE,
+                    width=220,
+                    height=70,
+                    border_radius=BorderRadius(5, 5, 5, 5),
+                    border=ft.border.all(1, Colors.GREY_300),
+                )
+            ],
+            spacing=10,
+        ),
+        padding=15,
+        bgcolor=Colors.GREY_50,
+        border_radius=BorderRadius(10, 10, 10, 10),
+        width=270,
+        height=150,
+        border=ft.border.all(1, Colors.GREY_300)
+    )
+    
+    # 右側コンテンツをまとめる
+    right_column = Column(
+        [calendar_container, topic1, topic2],
+        spacing=15,
+    )
+    
+    # 中央コンテンツをまとめる
+    center_column = Column(
+        [main_content1, main_content2, main_content3],
+        spacing=15,
+    )
+    
+    # スクロール可能なメインレイアウト
+    main_layout = ft.Column(
+        [
+            title_container,
+            Container(height=10),  # スペーサー
+            Row(
+                [
+                    button_area,
+                    Container(width=15),  # スペーサー
+                    center_column,
+                    Container(width=15),  # スペーサー
+                    right_column,
+                ],
+                alignment=MainAxisAlignment.START,
+                vertical_alignment=CrossAxisAlignment.START,
+            )
+        ],
+        spacing=0,
+        scroll=ft.ScrollMode.AUTO,
+        expand=True,
+    )
+    
+    # ページにスクロール設定を追加
+    page.scroll = ft.ScrollMode.AUTO
+    
+    # ページに追加
+    page.add(main_layout)
+    page.update()
+
+ft.app(target=main)
