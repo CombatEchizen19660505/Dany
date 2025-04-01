@@ -1,0 +1,99 @@
+#!/usr/bin/env python
+import asyncio
+import websockets
+import logging
+import os
+import sys
+import socket
+
+# ロギングの設定
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger("websocket-client")
+
+# プロキシ設定を環境変数から取得
+def get_proxy_settings():
+    http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy', '')
+    https_proxy = os.environ.get('HTTPS_PROXY') or os.environ.get('https_proxy', '')
+    
+    logger.info(f"HTTP プロキシ: {http_proxy}")
+    logger.info(f"HTTPS プロキシ: {https_proxy}")
+    
+    return http_proxy, https_proxy
+
+# プロキシ設定を使用して接続を確立
+async def connect_to_server(server_url):
+    http_proxy, https_proxy = get_proxy_settings()
+    
+    # プロキシ設定がある場合の処理
+    proxy_params = {}
+    if http_proxy:
+        # プロキシURLからホストとポートを抽出
+        proxy_url = http_proxy.replace('http://', '')
+        if ':' in proxy_url:
+            proxy_host, proxy_port = proxy_url.split(':')
+            proxy_port = int(proxy_port)
+        else:
+            proxy_host = proxy_url
+            proxy_port = 80
+            
+        proxy_params = {
+            'proxy': http_proxy,
+            'origin': f'http://{socket.gethostname()}'
+        }
+        
+        logger.info(f"プロキシを使用: {proxy_host}:{proxy_port}")
+    
+    try:
+        # websockets接続を確立
+        # 注: websocketsライブラリは自動的に環境変数のプロキシ設定を使用
+        async with websockets.connect(
+            server_url,
+            ping_interval=30,
+            ping_timeout=10,
+            **proxy_params
+        ) as websocket:
+            logger.info(f"サーバーに接続しました: {server_url}")
+            
+            # ユーザー入力ループ
+            while True:
+                # ユーザーにメッセージの入力を促す
+                message = input("送信するメッセージを入力してください (終了するには 'exit' と入力): ")
+                
+                if message.lower() == 'exit':
+                    logger.info("クライアントを終了します...")
+                    break
+                
+                # メッセージをサーバーに送信
+                logger.info(f"メッセージ送信中: {message}")
+                await websocket.send(message)
+                
+                # サーバーからの応答を待機
+                response = await websocket.recv()
+                logger.info(f"サーバーからの応答: {response}")
+                
+    except websockets.exceptions.ConnectionClosed as e:
+        logger.error(f"接続が閉じられました: コード {e.code}, 理由: {e.reason}")
+    except Exception as e:
+        logger.error(f"エラー発生: {e}")
+
+async def main():
+    if len(sys.argv) > 1:
+        server_ip = sys.argv[1]
+    else:
+        server_ip = input("サーバーのIPアドレスを入力してください: ")
+    
+    server_url = f"ws://{server_ip}:8080"
+    logger.info(f"接続先: {server_url}")
+    
+    await connect_to_server(server_url)
+
+if __name__ == "__main__":
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("クライアントを終了します...")
+    except Exception as e:
+        logger.error(f"予期せぬエラー: {e}")
