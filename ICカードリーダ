@@ -1,0 +1,126 @@
+import nfc
+import binascii
+import sys
+import time
+from datetime import datetime
+
+def on_connect(tag):
+    """
+    カードが検出されたときに呼び出される関数
+    """
+    print("タグを検出しました!")
+    
+    # タグの種類を確認
+    print(f"タグタイプ: {tag}")
+    
+    # IDmの取得（FeliCa用）
+    if isinstance(tag, nfc.tag.tt3.Type3Tag):
+        try:
+            idm = binascii.hexlify(tag.idm).decode('utf-8').upper()
+            print(f"IDm: {idm}")
+            
+            # 社員情報の記録（CSVファイル）
+            with open('employee_log.csv', 'a') as f:
+                timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                f.write(f"{timestamp},{idm}\n")
+                
+            return True
+            
+        except Exception as e:
+            print(f"エラーが発生しました: {e}")
+    else:
+        print("このカードはFeliCaではありません。")
+    
+    return True
+
+def read_employee_card():
+    """
+    RC-S300を使用して社員証を読み取る
+    """
+    try:
+        # NFCリーダーをオープン
+        clf = nfc.ContactlessFrontend('usb')
+        
+        # リーダーの接続確認
+        if not clf.device.name:
+            print("RC-S300が見つかりませんでした。接続を確認してください。")
+            return
+            
+        print(f"リーダー: {clf.device.name} を検出しました")
+        print("社員証をかざしてください（終了するには Ctrl+C を押してください）")
+        
+        # カードの読み取りを開始（タグが見つかるとon_connect関数が呼ばれる）
+        while True:
+            clf.connect(rdwr={'on-connect': on_connect})
+            print("次の社員証をかざしてください...")
+            time.sleep(1)  # 連続読み取りの間に少し待機
+            
+    except KeyboardInterrupt:
+        print("\n読み取りを終了します")
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+    finally:
+        # リソースの解放
+        if 'clf' in locals() and clf:
+            clf.close()
+
+def search_employee_id(employee_id):
+    """
+    特定の社員IDで検索する
+    """
+    try:
+        with open('employee_log.csv', 'r') as f:
+            lines = f.readlines()
+            
+        found = False
+        for line in lines:
+            if employee_id in line:
+                parts = line.strip().split(',')
+                print(f"検出日時: {parts[0]}, 社員ID: {parts[1]}")
+                found = True
+                
+        if not found:
+            print(f"社員ID {employee_id} の記録は見つかりませんでした")
+            
+    except FileNotFoundError:
+        print("ログファイルが見つかりません。まだ読み取りを行っていないかもしれません。")
+    except Exception as e:
+        print(f"エラーが発生しました: {e}")
+
+def main():
+    """
+    メイン関数：コマンドライン引数に応じて動作を変える
+    """
+    if len(sys.argv) > 1:
+        # 引数がある場合は検索モード
+        employee_id = sys.argv[1]
+        print(f"社員ID {employee_id} を検索します...")
+        search_employee_id(employee_id)
+    else:
+        # 引数がない場合は読み取りモード
+        print("RC-S300 社員証読み取りプログラムを開始します")
+        read_employee_card()
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+【使用方法】
+1.必要なライブラリをインストールします：
+  pip install nfcpy
+
+2.RC-S300をUSBポートに接続します。
+3.プログラムを実行します：
+  python employee_card_reader.py
+
+4.社員証をリーダーにかざすと、IDm（FeliCaの固有ID）が読み取られ、日時とともにCSVファイルに記録されます。
+
+注意事項
+  このコードはFeliCa形式の社員証を前提としています。MIFAREなど他の形式の場合は、コードを調整する必要があります。
+  システム環境によっては、RC-S300のドライバーを別途インストールする必要がある場合があります。
+  管理者権限が必要な場合があります（特にLinuxではsudoの実行が必要なことがあります）。
+  社員証の種類によっては、追加のセキュリティ認証が必要な場合があります。
+
+社員証の形式や必要な情報によって、コードをさらにカスタマイズすることができます。特定のデータブロックを読み取りたい場合は、FeliCaの仕様に従って追加のコードが必要になります。
