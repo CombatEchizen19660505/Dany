@@ -1,0 +1,114 @@
+import time
+import keyboard
+
+def read_qr_from_usb_reader():
+    """
+    USB接続のQRコードリーダーからデータを読み取る関数
+    QRコードリーダーはキーボードエミュレーションとして動作し、
+    スキャン後にEnterキーを送信することを前提としています
+    """
+    print("QRコードをスキャンしてください。終了するには 'esc' キーを押してください。")
+    
+    buffer = ""
+    qr_data_list = []
+    
+    def on_key_press(event):
+        nonlocal buffer
+        
+        # ESCキーで終了
+        if event.name == 'esc':
+            return False
+        
+        # Enterキーが押されたら、バッファにたまったデータを処理
+        if event.name == 'enter':
+            if buffer:
+                print(f"QRコードを読み取りました: {buffer}")
+                qr_data_list.append(buffer)
+                buffer = ""
+        # バックスペースキーでバッファから1文字削除
+        elif event.name == 'backspace':
+            buffer = buffer[:-1] if buffer else ""
+        # その他のキー入力をバッファに追加
+        elif len(event.name) == 1:  # 通常の文字キー
+            buffer += event.name
+        # 特殊キーの処理（例：テンキーの数字など）
+        elif hasattr(event, 'scan_code'):
+            # スキャンコードを見て特殊キーを処理
+            if event.name.startswith('num ') and len(event.name) > 4:
+                buffer += event.name[-1]
+    
+    # キーボードイベントのフック
+    keyboard.on_press(on_key_press)
+    
+    try:
+        # ESCキーが押されるまで実行
+        keyboard.wait('esc')
+    except KeyboardInterrupt:
+        print("プログラムが中断されました")
+    finally:
+        # キーボードイベントのフックを解除
+        keyboard.unhook_all()
+    
+    return qr_data_list
+
+def log_qr_data(qr_data, file_name="qr_log.txt"):
+    """
+    読み取ったQRコードデータをファイルに記録する関数
+    """
+    try:
+        with open(file_name, "a", encoding="utf-8") as f:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            for data in qr_data:
+                f.write(f"{timestamp}: {data}\n")
+        print(f"QRコードデータを {file_name} に記録しました")
+    except Exception as e:
+        print(f"ファイルへの書き込み中にエラーが発生しました: {str(e)}")
+
+def process_qr_data(qr_data):
+    """
+    読み取ったQRコードデータを処理する関数
+    この関数は必要に応じてカスタマイズしてください
+    """
+    if not qr_data:
+        print("処理するQRコードデータがありません")
+        return
+    
+    print("\n===== 読み取り結果 =====")
+    for i, data in enumerate(qr_data, 1):
+        print(f"{i}. {data}")
+    print("=======================")
+
+# メイン実行部分
+if __name__ == "__main__":
+    print("USB QRコードリーダー読み取りプログラムを開始します")
+    print("※このプログラムはQRコードリーダーがキーボードとして認識される前提で動作します")
+    print("※終了するには 'esc' キーを押してください")
+    
+    # QRコードの読み取り
+    qr_data = read_qr_from_usb_reader()
+    
+    # データの処理
+    process_qr_data(qr_data)
+    
+    # データのログ記録
+    if qr_data:
+        log_qr_data(qr_data)
+    
+    print("プログラムを終了します")
+
+
+【使用方法】
+1.必要なライブラリをインストールします:
+  pip install keyboard
+
+2.QRコードリーダーをUSB接続します。ほとんどの市販のQRコードリーダーはプラグアンドプレイで、特別なドライバは必要ありません。
+3.コードを実行します。
+4.QRコードをスキャンすると、リーダーがデータを「キーボード入力」として送信し、プログラムがそのデータを捕捉します。
+5.ESCキーを押すとプログラムが終了します。
+
+注意事項
+  このコードは、QRコードリーダーが「キーボードエミュレーション」モードで動作することを前提としています（ほとんどのUSB QRコードリーダーはこのモードで動作します）。
+  QRコードリーダーの設定によっては、スキャン後に自動的にEnterキーを送信する設定になっている必要があります。
+  管理者権限が必要な場合があります（特にWindowsでキーボードフックを使用する場合）。
+
+必要に応じて、データベースへの保存やネットワーク送信など、QRコードデータの処理部分をカスタマイズしてください。
