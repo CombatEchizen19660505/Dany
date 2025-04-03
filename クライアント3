@@ -21,6 +21,9 @@ message_history = []
 flet_page = None
 message_queue = asyncio.Queue()
 
+# ウィンドウの状態を管理する変数
+window_closed_by_server = False
+
 # プロキシ設定を環境変数から取得
 def get_proxy_settings():
     http_proxy = os.environ.get('HTTP_PROXY') or os.environ.get('http_proxy', '')
@@ -33,11 +36,23 @@ def get_proxy_settings():
 
 # Fletのページ初期化
 def init_page(page):
-    global flet_page
+    global flet_page, window_closed_by_server
     flet_page = page
+    window_closed_by_server = False
+    
+    # ウィンドウがユーザーによって閉じられた時の処理
+    def on_window_close(e):
+        global window_closed_by_server
+        if not window_closed_by_server:
+            logger.info("ユーザーによってウィンドウが閉じられました")
+        page.window_close()
     
     page.title = "WebSocketクライアント"
     page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    page.on_window_event = lambda e: on_window_close(e) if e.data == "close" else None
+    
+    # ステータスバー
+    status_text = ft.Text("サーバーに接続中...", color=ft.colors.GREEN)
     
     # メッセージ表示領域
     message_list = ft.ListView(
@@ -51,7 +66,10 @@ def init_page(page):
     page.add(
         ft.Container(
             content=ft.Column([
-                ft.Text("サーバーからのメッセージ", size=20, weight=ft.FontWeight.BOLD),
+                ft.Row([
+                    ft.Text("サーバーからのメッセージ", size=20, weight=ft.FontWeight.BOLD),
+                    status_text
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
                 ft.Divider(),
                 ft.Container(
                     content=message_list,
@@ -62,8 +80,10 @@ def init_page(page):
                     expand=True
                 ),
                 ft.Row([
+                    ft.Text("※サーバーから'CLOSE'メッセージを受信するとウィンドウが閉じます", 
+                           size=12, color=ft.colors.GREY),
                     ft.ElevatedButton("閉じる", on_click=lambda e: page.window_close()),
-                ], alignment=ft.MainAxisAlignment.END)
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN)
             ]),
             padding=20,
             expand=True
@@ -115,10 +135,20 @@ async def receive_messages(websocket):
                 # メッセージキューに追加
                 await message_queue.put(formatted_message)
                 
-                # Fletウィンドウが表示されていない場合は表示
-                if flet_page is None or not flet_page.window_visible:
-                    # 別スレッドでFletウィンドウを起動
-                    asyncio.create_task(show_flet_window())
+                # "CLOSE"メッセージの場合、ウィンドウを閉じる
+                if message.strip() == "CLOSE":
+                    logger.info("CLOSEメッセージを受信しました。ウィンドウを閉じます。")
+                    if flet_page is not None and flet_page.window_visible:
+                        global window_closed_by_server
+                        window_closed_by_server = True
+                        await message_queue.put(f"[{timestamp}] サーバーからのCLOSEコマンドによりウィンドウを閉じます")
+                        await asyncio.sleep(1)  # メッセージを表示するための短い待機
+                        await flet_page.run_async(lambda: flet_page.window_close())
+                else:
+                    # それ以外のメッセージでFletウィンドウが表示されていない場合は表示
+                    if flet_page is None or not flet_page.window_visible:
+                        # 別スレッドでFletウィンドウを起動
+                        asyncio.create_task(show_flet_window())
                 
             except websockets.exceptions.ConnectionClosed:
                 logger.error("接続が閉じられました。再接続を試みます...")
@@ -129,9 +159,14 @@ async def receive_messages(websocket):
 # Fletウィンドウを表示する非同期関数
 async def show_flet_window():
     try:
+        global window_closed_by_server
+        
         # Fletウィンドウが既に起動していれば何もしない
         if flet_page is not None and flet_page.window_visible:
             return
+            
+        # サーバーによって閉じられた場合のフラグをリセット
+        window_closed_by_server = False
             
         # コンソールに表示
         logger.info("メッセージウィンドウを表示します")
@@ -263,6 +298,8 @@ if __name__ == "__main__":
         logger.error(f"予期せぬエラー: {e}")
 
 
+
+
 【修正したクライアントコードの説明】
 クライアントコードを要件に合わせて修正しました。主な変更点は以下の通りです：
   1. Fletフレームワークの追加
@@ -275,3 +312,32 @@ if __name__ == "__main__":
   3. 非同期処理と並行実行
     WebSocketの通信処理とUI表示を並行して実行するため、非同期処理を実装しています
     メッセージキューを使用して、WebSocketスレッドとUIスレッド間の通信を行います
+
+
+
+【更に修正したクライアントコードの説明】
+サーバーからの特定のメッセージ（"CLOSE"）を受信した場合にウィンドウを閉じる機能を追加しました。主な変更点は以下の通りです：
+    1. CLOSEメッセージ検出と処理
+        WebSocketからメッセージを受信する部分で、受信したメッセージが "CLOSE" かどうかをチェックするようにしました。
+        "CLOSE" メッセージの場合は、Fletウィンドウを閉じる処理を実行します：
+
+        # "CLOSE"メッセージの場合、ウィンドウを閉じる
+        if message.strip() == "CLOSE":
+            logger.info("CLOSEメッセージを受信しました。ウィンドウを閉じます。")
+            if flet_page is not None and flet_page.window_visible:
+                global window_closed_by_server
+                window_closed_by_server = True
+                await message_queue.put(f"[{timestamp}] サーバーからのCLOSEコマンドによりウィンドウを閉じます")
+                await asyncio.sleep(1)  # メッセージを表示するための短い待機
+                await flet_page.run_async(lambda: flet_page.window_close())
+
+    2. ウィンドウ閉じる理由を区別するためのフラグ追加
+        ユーザーが手動でウィンドウを閉じた場合とサーバーからの"CLOSE"コマンドによって閉じた場合を区別するために、グローバル変数 window_closed_by_server を追加しました：
+
+    3. UIの改善
+        ウィンドウにステータスバーを追加して接続状態を表示するようにしました
+        ウィンドウの下部に "CLOSE" コマンドについての説明を追加しました
+        ウィンドウが閉じられる前に、閉じる理由を説明するメッセージを表示するようにしました
+    
+    4. ウィンドウクローズイベントのハンドリング
+        ユーザーがウィンドウを閉じた場合のイベントハンドリングを追加し、ログにも記録するようにしました：
