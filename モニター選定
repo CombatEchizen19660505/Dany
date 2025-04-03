@@ -1,0 +1,39 @@
+LETとPythonで作成したアプリを特定のモニター（この場合はモニター3）に最大化して表示することは可能です。Fletはマルチウィンドウとディスプレイ配置の制御をサポートしています。
+以下のようなコードを使用して、特定のモニターにアプリを最大化表示できます：
+
+import flet as ft
+from screeninfo import get_monitors
+
+def main(page: ft.Page):
+    # すべてのモニタ情報を取得
+    monitors = get_monitors()
+    
+    # モニター3を取得（リストの2番目、0から始まるため）
+    if len(monitors) >= 3:
+        target_monitor = monitors[2]
+        
+        # ウィンドウをモニター3に配置
+        page.window_left = target_monitor.x
+        page.window_top = target_monitor.y
+        
+        # ウィンドウを最大化
+        page.window_width = target_monitor.width
+        page.window_height = target_monitor.height
+        page.window_maximized = True
+        
+        # UIコンポーネントをここに追加
+        page.add(ft.Text(f"モニター3に表示中: {target_monitor.width}x{target_monitor.height}"))
+    else:
+        page.add(ft.Text("モニター3が見つかりません。"))
+
+ft.app(target=main)
+
+このコードを実行するには、まず必要なパッケージをインストールしてください：
+  pip install flet screeninfo
+
+screeninfo ライブラリを使用して接続されているすべてのモニターの情報を取得し、3番目のモニター（インデックス2）に対してウィンドウを配置しています。
+代替方法として、Fletの window_to_front メソッドと組み合わせて使うこともできます：
+
+# アプリが起動したら前面に表示
+page.window_to_front()
+また、より詳細に制御したい場合は、Fletの window プロパティを使用して、特定の位置に配置したり、フルスクリーンモードに設定したりすることもできます。
