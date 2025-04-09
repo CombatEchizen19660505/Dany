@@ -1,0 +1,150 @@
+WebSocketクライアントのウィンドウサイズエラー解析
+
+エラーが発生している状況を確認し、ステップバイステップで原因と対策を考えていきます。
+
+【問題分析】
+1.エラー状況: サーバーからメッセージを受け取ると、window_width 関連でエラーが発生する
+2.問題箇所の特定: エラーは show_flet_window() 関数内の以下の部分と考えられます
+
+await asyncio.get_event_loop().run_in_executor(
+    None, 
+    partial(
+        ft.app, 
+        target=init_page, 
+        view=ft.AppView.WINDOW, 
+        window_width=600,  # ここが問題
+        window_height=500,
+        window_title="WebSocketクライアント"
+    )
+)
+
+
+【原因の特定】
+
+1.Flet API の変更: 最近のバージョンの Flet では、ウィンドウ設定のパラメータ名や構造が変更されている可能性があります
+2.非同期実行の問題: 非同期環境で run_in_executor を使用して Flet アプリを実行する際のパラメータ渡しに問題がある可能性があります
+3.パラメータの受け渡し: partial 関数を使った場合、一部のキーワード引数が正しく処理されない場合があります
+
+【解決策】
+以下の修正方法を試してみてください：
+
+修正方法1: init_page内でウィンドウサイズを設定する
+以下コード
+def init_page(page):
+    global flet_page, window_closed_by_server
+    flet_page = page
+    window_closed_by_server = False
+    
+    # ウィンドウがユーザーによって閉じられた時の処理
+    def on_window_close(e):
+        global window_closed_by_server
+        if not window_closed_by_server:
+            logger.info("ユーザーによってウィンドウが閉じられました")
+        page.window_close()
+    
+    # ここでウィンドウサイズを設定する
+    page.window_width = 600
+    page.window_height = 500
+    page.title = "WebSocketクライアント"
+    
+    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    page.on_window_event = lambda e: on_window_close(e) if e.data == "close" else None
+    
+    # 以下は同じ...
+
+
+そして show_flet_window 関数を以下のように変更します：
+以下コード
+async def show_flet_window():
+    try:
+        global window_closed_by_server
+        
+        # Fletウィンドウが既に起動していれば何もしない
+        if flet_page is not None and flet_page.window_visible:
+            return
+            
+        # サーバーによって閉じられた場合のフラグをリセット
+        window_closed_by_server = False
+            
+        # コンソールに表示
+        logger.info("メッセージウィンドウを表示します")
+        
+        # 問題のあるパラメータを削除
+        await asyncio.get_event_loop().run_in_executor(
+            None, 
+            partial(
+                ft.app, 
+                target=init_page, 
+                view=ft.AppView.WINDOW
+            )
+        )
+    except Exception as e:
+        logger.error(f"Fletウィンドウ表示エラー: {e}")
+
+
+
+修正方法2: 最新のFlet APIに合わせた修正
+以下コード
+async def show_flet_window():
+    try:
+        global window_closed_by_server
+        
+        # Fletウィンドウが既に起動していれば何もしない
+        if flet_page is not None and flet_page.window_visible:
+            return
+            
+        # サーバーによって閉じられた場合のフラグをリセット
+        window_closed_by_server = False
+            
+        # コンソールに表示
+        logger.info("メッセージウィンドウを表示します")
+        
+        # partial を使わず、明示的に関数を定義
+        def run_flet_app():
+            ft.app(
+                target=init_page,
+                view=ft.AppView.WINDOW
+            )
+        
+        await asyncio.get_event_loop().run_in_executor(None, run_flet_app)
+    except Exception as e:
+        logger.error(f"Fletウィンドウ表示エラー: {e}")
+
+
+
+
+
+修正方法3: Flet の最新バージョンの window オブジェクト構文を使用
+
+最新の Flet では、ウィンドウプロパティは page.window オブジェクトで設定する場合があります：
+以下コード
+def init_page(page):
+    global flet_page, window_closed_by_server
+    flet_page = page
+    window_closed_by_server = False
+    
+    # ウィンドウ設定
+    page.window.title = "WebSocketクライアント"
+    page.window.width = 600
+    page.window.height = 500
+    
+    # 以下は同じ...
+
+
+【実装手順】
+1.まずは「修正方法1」を試してください（最も非侵襲的な変更です）
+2.それでもエラーが解決しない場合は「修正方法2」を試してください
+3.それでも解決しない場合は使用している Flet のバージョンを確認し、「修正方法3」を検討してください
+
+また、修正を加えた後は、エラーメッセージをより詳細に記録するために、以下のようなログ出力の強化も検討してください：
+
+try:
+    # Flet関連の処理
+except Exception as e:
+    logger.error(f"Fletウィンドウ表示エラー: {e}")
+    logger.error(f"エラーの詳細: {type(e).__name__}, {str(e)}")
+    import traceback
+    logger.error(f"スタックトレース: {traceback.format_exc()}")
+
+
+これにより、今後エラーが発生した場合により詳細な情報が得られるでしょう。
