@@ -1,114 +1,179 @@
-import time
-import keyboard
+# QRコード読み込み待機時にサーバー処理が動作しない問題の分析
 
-def read_qr_from_usb_reader():
-    """
-    USB接続のQRコードリーダーからデータを読み取る関数
-    QRコードリーダーはキーボードエミュレーションとして動作し、
-    スキャン後にEnterキーを送信することを前提としています
-    """
-    print("QRコードをスキャンしてください。終了するには 'esc' キーを押してください。")
+コードを分析したところ、QRコード読み取り待機中にサーバー起動とクライアント接続が動作しない明確な原因が見つかりました。
+
+## 問題点
+
+問題の根源は、`views.py`ファイルの最後の部分にあります：
+
+```python
+# 非同期関数を呼び出すためにイベントループを取得
+loop = asyncio.get_event_loop()
+# qr_data = loop.run_until_complete(read_qr_from_usb_reader())
+qr_data = await read_qr_from_usb_reader()
+print("プログラムを終了します")
+print(f"読み取ったQRコードデータ: {qr_data}")
+```
+
+この部分は**モジュールインポート時に実行**されています。つまり、`main.py`が:
+
+```python
+from views import show_top_screen, view1, view2, view3, view4, view5, create_button
+```
+
+としてviewsモジュールをインポートした瞬間に、QRコード読み取り関数が起動し、プログラムの実行がブロックされてしまいます。
+
+## 解決手順
+
+### 1. `views.py`の修正
+
+`views.py`からトップレベルにあるQRコード読み取りコードを削除し、関数内に移動させます：
+
+```python
+# views.py の末尾から以下のコードを削除
+# loop = asyncio.get_event_loop()
+# qr_data = await read_qr_from_usb_reader()
+# print("プログラムを終了します")
+# print(f"読み取ったQRコードデータ: {qr_data}")
+```
+
+### 2. `show_top_screen`関数の修正
+
+QRコード読み取り機能を`show_top_screen`関数内から適切に呼び出せるように変更します：
+
+```python
+async def show_top_screen(page):
+    page.clean()
+    page.add(ft.Text(value="TOP画面 QRコード読み取り", size=30, color=ft.Colors.BLACK, weight="bold"))
     
+    # QRコード読み取りボタンを追加
+    qr_button = ft.ElevatedButton(
+        text="QRコードを読み取る",
+        width=200,
+        height=50,
+        style=ft.ButtonStyle(
+            shape=ft.RoundedRectangleBorder(radius=5),
+            text_style=ft.TextStyle(weight="bold")
+        ),
+        bgcolor=ft.Colors.BLUE,
+        color=ft.Colors.WHITE,
+        on_click=lambda e: asyncio.create_task(handle_qr_scan(page))
+    )
+    page.add(qr_button)
+    page.update()
+
+async def handle_qr_scan(page):
+    # QR読み取り中の状態表示
+    status_text = ft.Text(value="QRコードをスキャンしてください...", size=20, color=ft.Colors.RED)
+    page.add(status_text)
+    page.update()
+    
+    try:
+        qr_data = await read_qr_from_usb_reader()
+        # QRコードデータを処理
+        status_text.value = f"読み取り完了: {qr_data}"
+        page.update()
+        # ここでQRデータに応じた処理を行う
+    except Exception as e:
+        status_text.value = f"エラー: {str(e)}"
+        page.update()
+```
+
+### 3. `main.py`のサーバー起動部分の調整
+
+サーバーが最初に起動されるように`main`関数の順序を調整します：
+
+```python
+async def main(page: ft.Page):
+    page.title = "備品管理システム"
+    page.padding = 8
+    
+    # サーバーをまず起動
+    server = await start_server(page)
+    
+    # サーバー処理を別タスクとして開始
+    server_task = asyncio.create_task(
+        asyncio.gather(
+            handle_connections(server), 
+            process_server_commands(), 
+            keep_running()
+        )
+    )
+    
+    # UI設定（サーバー起動後）
+    title_container = ft.Container(
+        content=ft.Text(value="備品管理システム", size=20, color=ft.Colors.BLACK, weight="bold"),
+        bgcolor=ft.Colors.BLUE,
+        alignment=ft.alignment.top_left,
+        padding=10,
+    )
+
+    page.add(title_container)
+    # 残りのUI設定...
+    
+    # 最後にトップ画面表示
+    await show_top_screen(page)
+    
+    try:
+        # サーバータスクが完了するまで待機
+        await server_task
+    except asyncio.CancelledError:
+        logger.info("非同期タスクがキャンセルされました")
+        asyncio.get_event_loop().stop()
+```
+
+### 4. `read_qr_from_usb_reader`関数の最適化
+
+`keyboard.wait`がブロッキング操作のため、`asyncio.to_thread`を使用していますが、タイムアウト処理を追加します：
+
+```python
+async def read_qr_from_usb_reader(timeout=60):  # タイムアウトを60秒に設定
+    print("QRコードをスキャンしてください。")
     buffer = ""
     qr_data_list = []
+    scan_complete = asyncio.Event()
     
     def on_key_press(event):
         nonlocal buffer
         
-        # ESCキーで終了
-        if event.name == 'esc':
-            return False
-        
-        # Enterキーが押されたら、バッファにたまったデータを処理
         if event.name == 'enter':
             if buffer:
                 print(f"QRコードを読み取りました: {buffer}")
                 qr_data_list.append(buffer)
                 buffer = ""
-        # バックスペースキーでバッファから1文字削除
-        elif event.name == 'backspace':
-            buffer = buffer[:-1] if buffer else ""
-        # その他のキー入力をバッファに追加
-        elif len(event.name) == 1:  # 通常の文字キー
-            buffer += event.name
-        # 特殊キーの処理（例：テンキーの数字など）
-        elif hasattr(event, 'scan_code'):
-            # スキャンコードを見て特殊キーを処理
-            if event.name.startswith('num ') and len(event.name) > 4:
-                buffer += event.name[-1]
+                # 完了イベントをセット
+                scan_complete.set()
+                keyboard.unhook_all()
+                return False
+        # 他のキー処理コード...
     
-    # キーボードイベントのフック
     keyboard.on_press(on_key_press)
     
     try:
-        # ESCキーが押されるまで実行
-        keyboard.wait('esc')
-    except KeyboardInterrupt:
-        print("プログラムが中断されました")
+        # タイムアウト付きで待機
+        await asyncio.wait_for(
+            asyncio.to_thread(lambda: keyboard.wait('enter')), 
+            timeout=timeout
+        )
+        # イベントが設定されるまで待機
+        await asyncio.wait_for(scan_complete.wait(), timeout=1)
+    except asyncio.TimeoutError:
+        print("QRコード読み取りがタイムアウトしました")
     finally:
-        # キーボードイベントのフックを解除
         keyboard.unhook_all()
     
     return qr_data_list
+```
 
-def log_qr_data(qr_data, file_name="qr_log.txt"):
-    """
-    読み取ったQRコードデータをファイルに記録する関数
-    """
-    try:
-        with open(file_name, "a", encoding="utf-8") as f:
-            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-            for data in qr_data:
-                f.write(f"{timestamp}: {data}\n")
-        print(f"QRコードデータを {file_name} に記録しました")
-    except Exception as e:
-        print(f"ファイルへの書き込み中にエラーが発生しました: {str(e)}")
+## 解決策のまとめ
 
-def process_qr_data(qr_data):
-    """
-    読み取ったQRコードデータを処理する関数
-    この関数は必要に応じてカスタマイズしてください
-    """
-    if not qr_data:
-        print("処理するQRコードデータがありません")
-        return
-    
-    print("\n===== 読み取り結果 =====")
-    for i, data in enumerate(qr_data, 1):
-        print(f"{i}. {data}")
-    print("=======================")
+1. **根本原因**: viewsモジュールインポート時にQRコード読み取り関数が即時実行され、非同期イベントループがブロックされています。
 
-# メイン実行部分
-if __name__ == "__main__":
-    print("USB QRコードリーダー読み取りプログラムを開始します")
-    print("※このプログラムはQRコードリーダーがキーボードとして認識される前提で動作します")
-    print("※終了するには 'esc' キーを押してください")
-    
-    # QRコードの読み取り
-    qr_data = read_qr_from_usb_reader()
-    
-    # データの処理
-    process_qr_data(qr_data)
-    
-    # データのログ記録
-    if qr_data:
-        log_qr_data(qr_data)
-    
-    print("プログラムを終了します")
+2. **対策**:
+   - モジュールレベルのQRコード読み取り実行コードを削除
+   - QRコード読み取り機能をボタンクリックなどのイベントに応じて実行するように変更
+   - サーバー起動処理をUI表示の前に配置
+   - 非同期処理を適切に分離して、UI操作がサーバー機能をブロックしないようにする
+   - タイムアウト処理を追加して、読み取りが無限に待機することを防止
 
-
-【使用方法】
-1.必要なライブラリをインストールします:
-  pip install keyboard
-
-2.QRコードリーダーをUSB接続します。ほとんどの市販のQRコードリーダーはプラグアンドプレイで、特別なドライバは必要ありません。
-3.コードを実行します。
-4.QRコードをスキャンすると、リーダーがデータを「キーボード入力」として送信し、プログラムがそのデータを捕捉します。
-5.ESCキーを押すとプログラムが終了します。
-
-注意事項
-  このコードは、QRコードリーダーが「キーボードエミュレーション」モードで動作することを前提としています（ほとんどのUSB QRコードリーダーはこのモードで動作します）。
-  QRコードリーダーの設定によっては、スキャン後に自動的にEnterキーを送信する設定になっている必要があります。
-  管理者権限が必要な場合があります（特にWindowsでキーボードフックを使用する場合）。
-
-必要に応じて、データベースへの保存やネットワーク送信など、QRコードデータの処理部分をカスタマイズしてください。
+これらの変更により、サーバーの起動とクライアント接続の受け付けが、QRコード読み取り待機とは独立して動作するようになります。
