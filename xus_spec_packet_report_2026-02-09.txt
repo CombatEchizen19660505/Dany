@@ -1,0 +1,225 @@
+## サマリー（要点だけ先に）
+
+- いまの遅さの主因は「**LLM間の受け渡しが文章ベース**」で、**差分・論点・決定待ちが自動抽出できず**、結果としてあなたが“編集者”になっている点です。  
+- 解決は **「仕様パケット（Spec Packet）」を唯一の受け渡し単位**に固定し、  
+  **Draft（GPT）→ Review（Claude）→ Diff（自動）→ Decision Queue（あなたは決めるだけ）** の流れにすることです。  
+- 実装は段階的に：  
+  **A. 手動コピー最小化** → **B. APIで半自動オーケストレーション（本命）** → **C. MCPで自動運用**。
+
+---
+
+# 報告書  
+## 件名
+クスィー（XUS）仕様策定における「伝書鳩作業」の半自動化／自動化提案（Spec Packet方式）
+
+## 作成日
+2026-02-09（JST）
+
+## 対象
+XUS Phase1 worker を中心とした要件定義・仕様決定フロー（あなた＝意思決定者、GPT＝ドラフト、Claude＝レビュー）
+
+---
+
+## 1. 背景と問題設定
+
+### 1.1 背景
+現状の仕様策定は、あなたが大枠を決めた後、  
+- GPTがメイン仕様を起案  
+- Claudeが見落としや矛盾を指摘  
+- あなたが両者を突合・要約し、決断する  
+という流れです。
+
+### 1.2 問題（ボトルネックの正体）
+ボトルネックは「あなたの判断が遅い」ではなく、構造的に **あなたが“統合編集者”にならざるを得ない**点です。具体的には：
+
+- **受け渡し物が文章**  
+  → どこが確定で、どこが仮で、どこが未決かが曖昧  
+- **指摘の参照先が曖昧**  
+  → Claudeの指摘が「仕様のどの節／どの前提／どのID」に紐づかず、手作業で紐付けが必要  
+- **差分が機械的に扱えない**  
+  → “矛盾”がテキストとして返るため、自動で「一致／不一致／未決」を分類できない
+
+結論として、**あなたが毎回「差分抽出・論点整理・決定待ち生成」を手でやる構造**になっています。
+
+---
+
+## 2. 目標（この提案が狙う到達点）
+
+### 2.1 主目標
+- **仕様策定サイクル時間の短縮**（ドラフト→レビュー→決断までの時間を圧縮）
+- あなたの作業を **「決断」へ極限まで圧縮**（編集・統合を排除）
+
+### 2.2 成功条件（KPI例）
+- 1モジュールあたりの仕様確定までの往復回数：**現状の半分以下**
+- あなたの介入：  
+  - 現状：統合・要約・修正指示が中心  
+  - 目標：**Decision Queue（Yes/No・A/B/C）への回答だけ**
+
+---
+
+## 3. 解決方針：Spec Packet（仕様パケット）を唯一の受け渡し単位にする
+
+### 3.1 基本思想
+受け渡し単位を「文章」から「構造化パケット」に切り替えます。
+
+- **Spec Packet = 仕様の最小単位（モジュール単位）**
+- すべての議論は Spec Packet の更新として扱う
+- Claudeの指摘も Spec Packet に対する **差分（patch）**で返させる
+
+この方式だと、  
+- **差分抽出（diff）**が機械的に可能  
+- 未決事項だけを **Decision Queue** に自動整形可能  
+- 結果、あなたは「決める」だけになります
+
+---
+
+## 4. 実装方式の比較（A/B/C）
+
+| 方式 | 概要 | 効果 | 実装コスト | リスク | 推奨 |
+|---|---|---:|---:|---:|---|
+| A. 手動最適化 | コピペは残すが、受け渡しをSpec Packet固定 | 中（編集が消える） | 低 | 低 | **即導入向き** |
+| B. 半自動（API） | オーケストレータが GPT→Claude→diff→Decision Queue を自動 | **大（往復が消える）** | 中 | 中 | **本命** |
+| C. 自動（MCP） | MCPでツール／資料参照まで含め“仕様策定パイプライン化” | 最大 | 高 | 中〜高 | Bの後 |
+
+---
+
+## 5. B方式（半自動）の中核：オーケストレータ設計
+
+### 5.1 なぜBが本命か
+- Aは“編集作業”は消えますが、コピペ往復は残ります  
+- Cは強いものの、初期設計が重くなりやすい  
+- よって **Bが費用対効果の頂点**です
+
+### 5.2 推奨フロー（毎回これだけ回す）
+1. 入力：`spec_packet.yaml`（現状・制約・論点・未決）  
+2. GPT（OpenAI）で **ドラフト生成**（Spec Packet更新案）  
+   - OpenAIは **Responses APIが今後の主軸**として明確化されています  
+     参照: https://platform.openai.com/docs/guides/migrate-to-responses
+3. Claude（Anthropic）で **レビュー生成**（欠落・矛盾・運用リスク・テスト観点）  
+   参照: https://platform.claude.com/docs/en/agents-and-tools/tool-use/overview
+4. `diff`：一致／不一致／未決を自動分類  
+5. 出力：`decision_queue.md`（あなたが決める項目だけ）＋ `spec_packet.updated.yaml`
+
+### 5.3 OpenAI API選定上の注意
+- Assistants APIは **2026-08-26にサンセット予定**が明記されています  
+  参照: https://platform.openai.com/docs/deprecations  
+→ これから作るなら Responses API 前提が堅いです。
+
+### 5.4 信頼性（障害前提設計が必須）
+外部LLMは落ちます。Claude側の障害例も報じられています。  
+参照: https://www.theverge.com/news/873093/claude-code-down-outage-anthropic  
+
+従ってオーケストレータは最低限：
+
+- **途中結果保存**（draft / review / diff をファイル保存）
+- **リトライ**（指数バックオフ）
+- **サーキットブレーカ**（一定回数失敗で停止）
+- **冪等性**（同じSpec Packet入力なら同じ更新結果を再生成しやすい設計）
+
+を備えるべきです。
+
+---
+
+## 6. Spec Packet（仕様パケット）最小スキーマ案
+
+> これを“唯一の受け渡し単位”に固定します。
+
+```yaml
+project: XUS Phase1 worker v0.1
+module: phase1_completion   # 例: retry_policy / parquet_validation / db_update / global_threshold
+spec_id: XUS-P1-CP-001
+status: draft               # draft / reviewed / decided
+constraints:
+  - status_enum_fixed: [active, complete, excluded, error, paused, superseded]
+  - file_path_canonical: db
+  - currency: usd
+  - include_empty_intervals: true
+
+assumptions:
+  - window_seconds: 21600
+  - bar_seconds: 300
+
+decisions_needed:
+  - id: D-001
+    question: "完走の判定に '72本揃う' を含めるか？"
+    options:
+      A: "含めない（推奨）: 末尾ts==end-300 & 300秒連続（欠損なし）"
+      B: "含める: 本数=72 を追加条件"
+    recommendation: A
+    rationale: "APIは常に72本を保証しない可能性（false negative防止）"
+    owner: user
+    due: asap
+
+acceptance_tests:
+  - id: T-001
+    given: "window=[start,end)"
+    when: "取得したcandlesを検証"
+    then:
+      - "last_ts == end-300"
+      - "ts差分は全て300"
+      - "範囲外tsが無い"
+
+risks:
+  - id: R-001
+    risk: "API欠損・429でデータ欠落"
+    mitigation: "リトライ+欠損判定+excluded理由を保持"
+change_log:
+  - date: 2026-02-09
+    change: "完走定義を本数固定から連続性定義へ"
+```
+
+---
+
+## 7. Decision Queue（あなたが見るのはこれだけ）
+
+Decision Queue は **1画面で決め切れる形式**にします（例）：
+
+- D-001：完走判定は A/B どちら？（推奨A）  
+- D-002：400閾値は 3/60min で即停止で良い？（Yes/No）  
+- D-003：GAPは STREAK=3 到達で excluded で良い？（Yes/No）
+
+> ここだけあなたが回答し、Spec Packet に自動反映します。
+
+---
+
+## 8. C方式（MCP）への発展条件
+
+MCPは、LLMと外部ツールを標準接続するためのオープンプロトコルです。  
+参照: https://modelcontextprotocol.io/specification/2025-11-25
+
+ただし、C方式へ進む条件は明確で：
+
+- B方式で **Spec Packet→Decision Queue** が安定運用できている  
+- 仕様の参照元（DBスキーマ、ログ、コード）が増えてきて  
+  「自動で参照してレビューしたい」ニーズが強くなった
+
+この段階で MCP を導入すると、効果が最大化します。
+
+---
+
+## 9. 付録：Claudeレビュー用プロンプト（雛形）
+
+```text
+あなたは仕様レビュー担当です。
+入力は Spec Packet（YAML）です。出力も必ず同じYAMLスキーマで返してください。
+
+やること：
+1) 矛盾・欠落・運用リスクを列挙（risksへ追記）
+2) acceptance_tests の不足を補う
+3) decisions_needed の追加があれば提案（question/options/recommendation/rationale）
+
+制約：
+- 既存のconstraintsは変更しない
+- 変更は change_log に理由つきで追記
+- 出力はYAMLのみ（前後の解説文は禁止）
+```
+
+---
+
+## 10. 次に取るべき最短の一手（15分想定）
+
+1) まずモジュールを **1つだけ**選ぶ（例：`phase1_completion`）  
+2) 上の雛形で `spec_packet.yaml` を最小で作る（あなたの大枠だけ入れる）  
+3) GPTドラフト → Claudeレビュー → diff → Decision Queue までを「一往復」回す  
+4) あなたは Decision Queue だけ決める  
+5) 決まった Spec Packet を “decided” にして凍結（次モジュールへ）
