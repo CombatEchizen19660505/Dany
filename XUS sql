@@ -1,0 +1,203 @@
+「XUSで使っているテーブルの“カラム名・型・NULL可否・デフォルト・制約・インデックス”を一括で可視化するSQLを、pgAdminでそのまま流せる形でまとめます。
+結論サマリー（これだけで足ります）
+カラム一覧：information_schema.columns
+制約（PK/UK/FK/CHECK）：pg_constraint + pg_attribute
+インデックス：pg_indexes（＋必要なら pg_index 詳細）
+以下のSQLをそのまま使ってください。
+————————————————————
+1) 対象テーブル一覧（XUS系だけ抽出）
+-- XUS系テーブル一覧（publicスキーマ想定）
+SELECT
+  schemaname,
+  tablename
+FROM pg_catalog.pg_tables
+WHERE schemaname = 'public'
+  AND tablename LIKE 'xus_%'
+ORDER BY tablename;
+
+————————————————————
+2) カラム一覧（型・NULL・デフォルト・コメント）
+-- カラム定義一覧（型/NULL/デフォルト/コメント）
+SELECT
+  c.table_schema,
+  c.table_name,
+  c.ordinal_position AS pos,
+  c.column_name,
+  c.data_type,
+  c.udt_name,
+  c.is_nullable,
+  c.column_default,
+  c.character_maximum_length,
+  c.numeric_precision,
+  c.numeric_scale,
+  pgd.description AS column_comment
+FROM information_schema.columns c
+LEFT JOIN pg_catalog.pg_statio_all_tables st
+  ON st.schemaname = c.table_schema
+ AND st.relname    = c.table_name
+LEFT JOIN pg_catalog.pg_description pgd
+  ON pgd.objoid = st.relid
+ AND pgd.objsubid = c.ordinal_position
+WHERE c.table_schema = 'public'
+  AND c.table_name LIKE 'xus_%'
+ORDER BY c.table_name, c.ordinal_position;
+————————————————————
+
+3) 制約一覧（PK / UNIQUE / FK / CHECK）
+-- 制約一覧（PK/UNIQUE/FK/CHECK の定義を表示）
+SELECT
+  n.nspname AS schema_name,
+  cl.relname AS table_name,
+  con.conname AS constraint_name,
+  CASE con.contype
+    WHEN 'p' THEN 'PRIMARY KEY'
+    WHEN 'u' THEN 'UNIQUE'
+    WHEN 'f' THEN 'FOREIGN KEY'
+    WHEN 'c' THEN 'CHECK'
+    WHEN 'x' THEN 'EXCLUDE'
+    ELSE con.contype::text
+  END AS constraint_type,
+  pg_catalog.pg_get_constraintdef(con.oid, true) AS constraint_def
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class cl
+  ON cl.oid = con.conrelid
+JOIN pg_catalog.pg_namespace n
+  ON n.oid = cl.relnamespace
+WHERE n.nspname = 'public'
+  AND cl.relname LIKE 'xus_%'
+ORDER BY table_name, constraint_type, constraint_name;
+
+————————————————————
+4) 制約がかかっている「カラム名」まで展開（PK/UK/FK）
+※CHECKは列に紐づかないことが多いので「定義」は#3で見るのが堅いですわ。
+
+-- 制約に紐づく列（PK/UNIQUE/FK）を列名まで展開
+SELECT
+  n.nspname AS schema_name,
+  cl.relname AS table_name,
+  con.conname AS constraint_name,
+  CASE con.contype
+    WHEN 'p' THEN 'PRIMARY KEY'
+    WHEN 'u' THEN 'UNIQUE'
+    WHEN 'f' THEN 'FOREIGN KEY'
+    ELSE con.contype::text
+  END AS constraint_type,
+  a.attname AS column_name,
+  ord.n AS column_order
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class cl
+  ON cl.oid = con.conrelid
+JOIN pg_catalog.pg_namespace n
+  ON n.oid = cl.relnamespace
+JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS ord(attnum, n)
+  ON true
+JOIN pg_catalog.pg_attribute a
+  ON a.attrelid = cl.oid
+ AND a.attnum   = ord.attnum
+WHERE n.nspname = 'public'
+  AND cl.relname LIKE 'xus_%'
+  AND con.contype IN ('p','u','f')
+ORDER BY table_name, constraint_name, column_order;
+————————————————————
+
+5) 外部キーの参照先（親テーブル/親カラムまで）
+-- 外部キーの参照先を可視化（子列→親テーブル.親列）
+SELECT
+  n.nspname AS schema_name,
+  cl.relname AS table_name,
+  con.conname AS fk_name,
+  a.attname AS fk_column,
+  n2.nspname AS ref_schema,
+  cl2.relname AS ref_table,
+  a2.attname AS ref_column,
+  ord.n AS column_order,
+  pg_catalog.pg_get_constraintdef(con.oid, true) AS fk_def
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class cl
+  ON cl.oid = con.conrelid
+JOIN pg_catalog.pg_namespace n
+  ON n.oid = cl.relnamespace
+JOIN pg_catalog.pg_class cl2
+  ON cl2.oid = con.confrelid
+JOIN pg_catalog.pg_namespace n2
+  ON n2.oid = cl2.relnamespace
+JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS ord(attnum, n)
+  ON true
+JOIN pg_catalog.pg_attribute a
+  ON a.attrelid = cl.oid
+ AND a.attnum   = ord.attnum
+JOIN pg_catalog.pg_attribute a2
+  ON a2.attrelid = cl2.oid
+ AND a2.attnum   = con.confkey[ord.n]
+WHERE n.nspname = 'public'
+  AND cl.relname LIKE 'xus_%'
+  AND con.contype = 'f'
+ORDER BY table_name, fk_name, column_order;
+————————————————————
+
+6) インデックス一覧（定義文字列で十分なことが多い）
+-- インデックス一覧（CREATE INDEX 定義文字列）
+SELECT
+  schemaname,
+  tablename,
+  indexname,
+  indexdef
+FROM pg_catalog.pg_indexes
+WHERE schemaname = 'public'
+  AND tablename LIKE 'xus_%'
+ORDER BY tablename, indexname;
+————————————————————
+7) 行数の概算（巨大テーブル向け、COUNT(*)より安全）
+-- 行数の概算（統計ベース / ANALYZE 後がより正確）
+SELECT
+  n.nspname AS schema_name,
+  c.relname AS table_name,
+  c.reltuples::bigint AS approx_rows
+FROM pg_catalog.pg_class c
+JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+WHERE n.nspname = 'public'
+  AND c.relname LIKE 'xus_%'
+  AND c.relkind = 'r'
+ORDER BY approx_rows DESC, table_name;
+————————————————————
+
+8) 1テーブルだけ指定して見る（例：xus_ohlcv_coverage）
+「全部は重い・見づらい」場合の最短ですわ。
+---------------------------------
+-- ★テーブル名だけ差し替えて使う：カラム定義
+SELECT
+  c.ordinal_position AS pos,
+  c.column_name,
+  c.data_type,
+  c.udt_name,
+  c.is_nullable,
+  c.column_default
+FROM information_schema.columns c
+WHERE c.table_schema = 'public'
+  AND c.table_name = 'xus_ohlcv_coverage'
+ORDER BY c.ordinal_position;
+
+-- ★制約
+SELECT
+  con.conname AS constraint_name,
+  CASE con.contype
+    WHEN 'p' THEN 'PRIMARY KEY'
+    WHEN 'u' THEN 'UNIQUE'
+    WHEN 'f' THEN 'FOREIGN KEY'
+    WHEN 'c' THEN 'CHECK'
+    ELSE con.contype::text
+  END AS constraint_type,
+  pg_catalog.pg_get_constraintdef(con.oid, true) AS constraint_def
+FROM pg_catalog.pg_constraint con
+JOIN pg_catalog.pg_class cl ON cl.oid = con.conrelid
+JOIN pg_catalog.pg_namespace n ON n.oid = cl.relnamespace
+WHERE n.nspname = 'public'
+  AND cl.relname = 'xus_ohlcv_coverage'
+ORDER BY constraint_type, constraint_name;
+
+-- ★インデックス
+SELECT indexname, indexdef
+FROM pg_catalog.pg_indexes
+WHERE schemaname='public' AND tablename='xus_ohlcv_coverage'
+ORDER BY indexname;
+————————————————————
